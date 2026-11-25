@@ -1,0 +1,304 @@
+using System;
+using System.Collections.Generic;
+using CairnMultiplayer.Shared;
+using CairnMultiplayerMod.Framework;
+using CairnMultiplayerMod.GameApi;
+using CairnMultiplayerMod.Internal;
+using CairnMultiplayerMod.Internal.Diagnostics;
+using CairnMultiplayerMod.Internal.Game;
+using CairnMultiplayerMod.Internal.Game.Life;
+using CairnMultiplayerMod.Internal.Game.Bivouac;
+using CairnMultiplayerMod.Internal.Game.MainMenu;
+using CairnMultiplayerMod.Internal.Game.Players;
+using CairnMultiplayerMod.Internal.Game.Roping;
+using CairnMultiplayerMod.Internal.Game.World;
+using CairnMultiplayerMod.Internal.Game.Voice;
+using CairnMultiplayerMod.Internal.Networking;
+using CairnMultiplayerMod.Internal.UI;
+using MelonLoader;
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+[assembly: MelonInfo(typeof(CairnMultiplayerMod.Bootstrap.Mod), "Cairn Multiplayer Mod", "2.4.4", "CairnModTeam")]
+[assembly: MelonGame("TheGameBakers", "Cairn")]
+
+namespace CairnMultiplayerMod.Bootstrap;
+
+public partial class Mod : MelonMod
+{
+    private static bool VerboseLogging { get; set; }
+
+    private void LogDebug(string message)
+    {
+        if (VerboseLogging) LoggerInstance.Msg(message);
+    }
+
+    private IMultiplayerPanel _panel;
+    private MainMenuAdapter _mainMenu;
+    private HudAdapter _hud;
+    private IGameApi _game;
+    private VoiceAdapter _voice;
+    private InventoryAdapter _inventory;
+    private IGameRegistration _mainMenuButton;
+    private readonly HashSet<string> _loadedScenes = new(StringComparer.Ordinal);
+    private Key _connectKey;
+    private Key _disconnectKey;
+    private bool _runtimeStopped;
+    private bool _quitIssued;
+    private bool _multiplayerModeActive;
+
+    private DateTime? _connectingStart;
+    private string _connectingVerb = "Creating lobby";
+    private string _lastLobbyError;
+
+    internal NetworkManager Network { get; private set; }
+    internal SteamLobbyManager Lobby { get; private set; }
+    private readonly RuntimeState _runtimeState = new();
+    internal PlayerState LocalState => _runtimeState.LocalPlayerState;
+
+    private PlayerStateBroadcaster Player { get; set; }
+    internal RopeCoupleController Rope { get; private set; }
+    private StartGameFlow StartGame { get; set; }
+    private BivouacSyncGate Bivouac { get; set; }
+
+    private FeatureHost Features { get; set; }
+
+    internal string CurrentScene => _runtimeState.CurrentScene;
+    internal string LastGameplayScene => _runtimeState.LastGameplayScene;
+
+    public override void OnInitializeMelon()
+    {
+        CrashHandler.Initialize(
+            message => LoggerInstance.Msg(message),
+            message => LoggerInstance.Warning(message),
+            message => LoggerInstance.Error(message));
+
+        try
+        {
+            ModConfig.Register();
+            VoicePreferences.Register();
+            VerboseLogging = ModConfig.VerboseLogging.Value;
+            ModLog.Initialize(
+                message => LoggerInstance.Msg(message),
+                message => LoggerInstance.Warning(message),
+                message => LoggerInstance.Error(message),
+                LogDebug);
+            FeatureLog.SetSink(
+                message => LoggerInstance.Msg(message),
+                message => LoggerInstance.Warning(message),
+                message => LoggerInstance.Error(message));
+            // After the log sinks: Install reports whether capture works only through ModLog,
+            // which drops everything before ModLog.Initialize.
+            Il2CppExceptionCapture.Install();
+
+            GameTuning.Apply();
+            InstallGamePatches();
+            CreateComponents();
+            WireLobbyEvents();
+            WirePanelEvents();
+            WireNetworkEvents();
+            RegisterFeatures();
+            if (CrashHandler.IsFatal) return;
+
+            LoggerInstance.Msg("===========================================");
+            LoggerInstance.Msg($"  Cairn Multiplayer Mod v{Protocol.GameVersion} loaded!");
+            LoggerInstance.Msg("  Diagnostics stay local unless you share them.");
+            LoggerInstance.Msg("===========================================");
+        }
+        catch (Exception exception)
+        {
+            CrashHandler.Fatal(exception, "Mod.OnInitializeMelon");
+        }
+    }
+
+    /// <summary>Feature contracts must exist before the first peer manifest is negotiated.</summary>
+    private void RegisterFeatures()
+    {
+        Features = new FeatureHost(
+            game: _game,
+            networkProvider: () => Network,
+            isActive: () => _multiplayerModeActive,
+            rules: () => _runtimeState.ModeRules);
+        try
+        {
+            Features.RegisterAll(FeatureRegistry.CreateAll(), new Version(Protocol.GameVersion));
+        }
+        catch (Exception ex)
+        {
+            // A feature that cannot declare itself is a build-time mistake that slipped
+            // through — say so loudly, the mod would otherwise run with a silent hole.
+            LoggerInstance.Error($"[Features] Registration failed: {ex}");
+            CrashHandler.Fatal(ex, "Mod.RegisterFeatures");
+        }
+    }
+
+    private void InstallGamePatches()
+    {
+        MultiplayerPausePatch.Configure(
+            () => Network?.IsConnected == true,
+            () => _game?.Chat.ForceClose());
+        GamePatchRegistry.InstallAll();
+    }
+
+    private void CreateComponents()
+    {
+        _connectKey = ParseKey(ModConfig.ConnectKey.Value, Key.F5);
+        _disconnectKey = ParseKey(ModConfig.DisconnectKey.Value, Key.F6);
+        Network = new NetworkManager(RopeLinkState.Links);
+        Lobby = new SteamLobbyManager();
+        _panel = MultiplayerPanelFactory.Create(Lobby, SummitWorldInterop.WhyUnavailable);
+        _mainMenu = new MainMenuAdapter(OnSoloModeSelected);
+        _hud = new HudAdapter();
+        _voice = new VoiceAdapter(() => Network, () => LocalState == PlayerState.InGame);
+        _inventory = new InventoryAdapter();
+        _game = new GameApiFacade(
+            _mainMenu,
+            new GameStateAdapter(() => LocalState),
+            new GameTimeAdapter(),
+            new GameInputAdapter(),
+            _hud,
+            new ChatAdapter(() => Network),
+            _inventory,
+            new ClockAdapter(),
+            new PlayersAdapter(() => Network, _runtimeState),
+            new WeatherAdapter(),
+            new WorldAdapter(), _voice, new LifeAdapter(), new SpectatorAdapter());
+
+        Rope = new RopeCoupleController(Network, _runtimeState);
+        Player = new PlayerStateBroadcaster(
+            Network, _runtimeState, Rope.Reset, () => Bivouac?.BlocksGameplaySync() == true,
+            isSpeaking: playerId => _voice?.IsSpeaking(playerId) == true);
+        StartGame = new StartGameFlow(_panel, _mainMenu.RestoreMainMenuInput, _runtimeState);
+        Bivouac = new BivouacSyncGate(
+            Network, _panel, _runtimeState, ResetSyncTimers, ResetSceneBoundSyncState, SetLocalState);
+    }
+
+    private void WireLobbyEvents()
+    {
+        Lobby.OnLobbyEntered += _ =>
+        {
+            _connectingStart = null;
+            _lastLobbyError = null;
+            // The launch signal sets the rules again, but not before features start: a
+            // latecomer's session runs for seconds before their own launch goes through.
+            _runtimeState.ModeRules = Lobby.CurrentModeRules;
+            // Lets the host see, before starting, who could not follow to a DLC destination.
+            Lobby.PublishWorldAvailability(SummitWorldInterop.WhyUnavailable(Lobby.CurrentWorld) == null);
+            var code = Lobby.CurrentRoomCode;
+            _panel.SetCurrentLobbyName(Lobby.CurrentLobbyName);
+            _panel.SetStatus(string.IsNullOrEmpty(code) ? "Connected" : $"Connected — code {code}", true);
+            Network.StartSteamTransport(Lobby);
+        };
+        Lobby.OnLobbyError += err =>
+        {
+            _connectingStart = null;
+            _lastLobbyError = err;
+            _panel.SetStatus($"Failed: {err}", Lobby.IsInLobby);
+        };
+        if (!Lobby.IsSteamIntegrationAvailable)
+        {
+            _lastLobbyError = Lobby.SteamUnavailableReason;
+            _panel.SetStatus($"Unavailable: {_lastLobbyError}", false);
+        }
+        Lobby.OnLobbyLeft += () =>
+        {
+            SetMultiplayerModeActive(false);
+            StartGame.Cancel();
+            _runtimeState.ModeRules = MultiplayerModes.RopeTeam;
+            RopeInterop.ClearRemotePitons();
+            Network.Disconnect();
+            WeatherInterop.ResetRemoteState();
+            RemotePlayerManager.ClearAll();
+            Rope.ClearLinks();
+            Bivouac.ForceResume();
+            _panel.SetStatus("Disconnected", false);
+        };
+        Lobby.OnMembersChanged += () =>
+        {
+            // The panel rebuilds its member list on every Tick from _lobby.Members,
+            // but we also push a short status so the footer reflects the event.
+            if (!Lobby.IsInLobby) return;
+            Network.RefreshSteamLobbyMembers(Lobby);
+            _panel.SetStatus($"{Lobby.Members.Count} player(s) in lobby", true);
+        };
+        Lobby.OnStartRequested += StartGame.Begin;
+    }
+
+    private void WirePanelEvents()
+    {
+        // The safe API stores this logical registration; its internal adapter attaches it
+        // whenever Cairn's scene-bound native menu becomes available.
+        _mainMenuButton = _game.MainMenu.AddButton("multiplayer", "Multiplayer", _panel.Show);
+
+        _panel.OnHostRequested += OnHostRequested;
+        _panel.OnJoinByCodeRequested += OnJoinByCodeRequested;
+        _panel.OnBrowseRequested += OnBrowseRequested;
+        _panel.OnJoinByLobbyIdRequested += OnJoinByLobbyIdRequested;
+        _panel.OnDisconnectRequested += OnDisconnectRequested;
+        _panel.OnStartRequested += OnStartRequested;
+        _panel.OnPanelClosed += _mainMenu.RestoreNativeMenu;
+    }
+
+    private void WireNetworkEvents()
+    {
+        Network.OnHandshakeAck += () =>
+        {
+            _panel.SetStatus($"Connected to {Network.ServerName} (id={Network.LocalPlayerId})", true);
+            SetMultiplayerModeActive(true);
+        };
+        Network.OnFeatureStream += (fromPlayerId, channel, payload) =>
+            Features.DispatchStream(fromPlayerId, channel, payload);
+        Network.OnHandshakeRejected += reason =>
+            _panel.SetStatus($"Rejected: {reason}", false);
+        Network.OnDisconnected += _ =>
+        {
+            SetMultiplayerModeActive(false);
+            StartGame.Cancel();
+            RopeInterop.ClearRemotePitons();
+            WeatherInterop.ResetRemoteState();
+            Rope.ClearLinks();
+            Bivouac.ForceResume();
+        };
+        Network.OnPlayerJoined += (id, name) =>
+        {
+            _panel.SetStatus($"Player joined: {name}", Network.IsConnected);
+            Network.RemotePlayers.TryGetValue(id, out var rp);
+            RemotePlayerManager.OnPlayerJoined(id, name, rp);
+        };
+        Network.OnPlayerLeft += id =>
+        {
+            _panel.SetStatus($"Player {id} left", Network.IsConnected);
+            RemotePlayerManager.OnPlayerLeft(id);
+            RopeLinkState.RemovePlayer(id);
+        };
+        Network.OnRopeClip += RopeLinkState.Apply;
+
+        // Recorded whatever the local player is doing; the Lifeline catches up on the next
+        // frame of play. Dropping them during a load or a camp lost those pitons for good.
+        Network.OnPitonPlaced += RopeInterop.KnowRemotePiton;
+        Network.OnPitonRemoved += pkt => RopeInterop.ForgetRemotePiton(pkt.PitonId);
+        Network.OnOwnPitonRecovered += RopeInterop.ForgetOwnPiton;
+        Network.OnTeleport += pkt =>
+        {
+            // The player may have entered a bivouac between the host check and delivery.
+            if (GameLifecycleService.IsLocalInBivouac())
+            {
+                LogDebug("[CairnMP] ServerTeleport ignored (local player is in a bivouac)");
+                return;
+            }
+
+            LogDebug($"[CairnMP] ServerTeleport received -> ({pkt.X:F1}, {pkt.Y:F1}, {pkt.Z:F1})");
+            // Being brought over is decided by the host, but only this client knows whether
+            // its own pawn can survive the move. Refusing here — and saying so — beats
+            // yanking someone off a wall.
+            if (!TeleportInterop.TeleportLocalPlayer(new Vector3(pkt.X, pkt.Y, pkt.Z), pkt.Yaw, out var refused))
+            {
+                LoggerInstance.Msg($"[CairnMP] Teleport request refused: {refused}");
+                _game?.Chat.AddSystemLine($"The host tried to bring you over, but {refused}.");
+            }
+        };
+        // Authoritative game launch by the server: queues the packet, applies it in
+        // Update when the MainMenu scene is active.
+        Network.OnStartGameReceived += pkt => StartGame.Begin(pkt);
+    }
+}

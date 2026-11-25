@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, production]
+  push:
+    branches: [develop, production]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable-tests:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Check version declarations
+        run: node scripts/sync-versions.js --check
+      - name: Test release and performance tooling
+        run: node --test "scripts/*.test.js"
+      - name: Restore locked dependencies
+        run: dotnet restore CairnMultiplayer.Tests/CairnMultiplayer.Tests.csproj --locked-mode
+      - name: Test
+        run: dotnet test CairnMultiplayer.Tests/CairnMultiplayer.Tests.csproj --configuration Release --no-restore -p:DeployMod=false

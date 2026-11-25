@@ -1,0 +1,59 @@
+# Proprietary game and loader reference assemblies. Provide these locally.
+game-refs/
+
+# .NET build output
+**/bin/
+**/obj/
+
+# Test and coverage output
+**/TestResults/
+**/coverage/
+*.trx
+*.coverage
+*.coveragexml
+BenchmarkDotNet.Artifacts/
+
+# Packaging output
+dist/
+
+# Node.js dependencies
+**/node_modules/
+
+# IDE and editor state
+.vs/
+.idea/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.rsuser
+*.iml
+*.DotSettings.user
+
+# OS files and logs
+.DS_Store
+Thumbs.db
+*.log
+
+# Local tooling, temporary work and private research notes
+.codex/
+.claude/
+.agents/
+.superpowers/
+.tmp/
+.cache/
+skill-observations/
+cross-cutting-principles.md
+
+# Documentation now maintained in a dedicated docs repository
+docs/
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
+*.snk

@@ -1,0 +1,80 @@
+$ErrorActionPreference = "Stop"
+
+$Root = Resolve-Path "$PSScriptRoot/.."
+$GameDir = "$env:LOCALAPPDATA\CairnMultiplayerData\game"
+
+if ($env:MELONLOADER_OUTPUT_DIR) {
+    $MelonLoaderSrc = $env:MELONLOADER_OUTPUT_DIR
+} else {
+    $MelonLoaderSrc = Join-Path $Root "..\MelonLoader\Output\Release\win-x64"
+}
+$OutputDir = Join-Path $Root "game-refs\Il2CppAssemblies"
+
+Write-Host ""
+Write-Host "  CairnMP - Il2Cpp Assembly Generator" -ForegroundColor Cyan
+Write-Host ""
+
+if (-not (Test-Path "$GameDir\Cairn.exe")) {
+    Write-Host "  ERROR: Game not found at $GameDir" -ForegroundColor Red
+    Write-Host "  Run the launcher first to copy the game files." -ForegroundColor Yellow
+    throw "Game directory not found"
+}
+
+if (-not (Test-Path "$MelonLoaderSrc\version.dll")) {
+    Write-Host "  ERROR: MelonLoader not found at $MelonLoaderSrc" -ForegroundColor Red
+    Write-Host "  Build the cairnmp branch of github.com/yutho-o/MelonLoader beside this repo:" -ForegroundColor Yellow
+    Write-Host "    dotnet build -c Release -p:Platform=x64" -ForegroundColor Yellow
+    Write-Host "  Or extract its MelonLoader.x64.zip release and set MELONLOADER_OUTPUT_DIR to it." -ForegroundColor Yellow
+    throw "MelonLoader build output not found"
+}
+
+Write-Host "  [1/4] Installing MelonLoader into game directory..." -ForegroundColor DarkGray
+Copy-Item -Force "$MelonLoaderSrc\version.dll" "$GameDir\version.dll"
+if (Test-Path "$GameDir\dobby.dll") { Remove-Item -Force "$GameDir\dobby.dll" }
+$LoaderDir = Join-Path $GameDir "MelonLoader"
+if (Test-Path $LoaderDir) { Remove-Item -Recurse -Force $LoaderDir }
+Copy-Item -Recurse -Force "$MelonLoaderSrc\MelonLoader" "$LoaderDir"
+Write-Host "  Done." -ForegroundColor Green
+
+Write-Host "  [2/4] Launching Cairn to generate Il2Cpp assemblies..." -ForegroundColor DarkGray
+Write-Host "         (the game will open briefly, then be closed automatically)" -ForegroundColor DarkGray
+
+$Il2CppDir = Join-Path $LoaderDir "Il2CppAssemblies"
+$proc = Start-Process -FilePath "$GameDir\Cairn.exe" -PassThru
+
+$timeout = 300
+$elapsed = 0
+while (-not (Test-Path "$Il2CppDir\UnityEngine.CoreModule.dll")) {
+    Start-Sleep -Seconds 2
+    $elapsed += 2
+    if ($elapsed -ge $timeout) {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        throw "Timeout: Il2Cpp assemblies not generated after ${timeout}s"
+    }
+    if ($proc.HasExited) {
+        if (-not (Test-Path "$Il2CppDir\UnityEngine.CoreModule.dll")) {
+            throw "Game exited before generating Il2Cpp assemblies"
+        }
+    }
+    Write-Host "." -NoNewline
+}
+Write-Host ""
+Write-Host "  Assemblies generated!" -ForegroundColor Green
+
+Write-Host "  [3/4] Closing game..." -ForegroundColor DarkGray
+if (-not $proc.HasExited) {
+    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+}
+
+Write-Host "  [4/4] Copying assemblies to game-refs/..." -ForegroundColor DarkGray
+if (Test-Path $OutputDir) { Remove-Item -Recurse -Force $OutputDir }
+New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+Copy-Item -Force "$Il2CppDir\*.dll" $OutputDir
+
+$count = (Get-ChildItem "$OutputDir\*.dll").Count
+Write-Host ""
+Write-Host "  Done! $count assemblies copied to game-refs/Il2CppAssemblies/" -ForegroundColor Green
+Write-Host "  These proprietary references stay local: do not commit them." -ForegroundColor DarkGray
+Write-Host "  You can now build the solution or run package-mod.ps1." -ForegroundColor Green
+Write-Host ""

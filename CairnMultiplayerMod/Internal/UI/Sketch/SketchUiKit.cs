@@ -1,0 +1,287 @@
+using Il2CppTMPro;
+using UnityEngine;
+using UnityEngine.Events;
+using UnityEngine.UI;
+
+namespace CairnMultiplayerMod.Internal.UI.Sketch;
+
+internal static class SketchUiKit
+{
+    // Mirrors the native photo-mode palette so the panel belongs in Cairn's UI.
+    public static readonly Color PanelTint = Color.white;
+    public static readonly Color FrameTint = new(1f, 1f, 0.96f, 1f);
+    public static readonly Color TextCream = new(0.91f, 0.89f, 0.83f, 1f);
+    public static readonly Color TextDim = new(0.91f, 0.89f, 0.83f, 0.76f);
+    public static readonly Color Accent = new(0.79f, 0.64f, 0.42f, 1f);
+    public static readonly Color IconActive = Color.white;
+    public static readonly Color IconIdle = new(1f, 1f, 1f, 0.45f);
+    public static readonly Color FieldBg = new(0.09f, 0.12f, 0.21f, 0.95f);
+    public static readonly Color RowTint = new(0.04f, 0.06f, 0.12f, 0.55f);
+    public static readonly Color ButtonText = new(0.20f, 0.18f, 0.15f, 1f);
+
+    public static GameObject Make(string name, Transform parent)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(parent, false);
+        return go;
+    }
+
+    public static RectTransform Rect(GameObject go, Vector2 aMin, Vector2 aMax,
+        Vector2 offMin = default, Vector2 offMax = default)
+    {
+        var rt = go.GetComponent<RectTransform>() ?? go.AddComponent<RectTransform>();
+        rt.anchorMin = aMin;
+        rt.anchorMax = aMax;
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.offsetMin = offMin;
+        rt.offsetMax = offMax;
+        return rt;
+    }
+
+    public static RectTransform Stretch(GameObject go)
+    {
+        var rt = go.GetComponent<RectTransform>() ?? go.AddComponent<RectTransform>();
+        rt.anchorMin = Vector2.zero;
+        rt.anchorMax = Vector2.one;
+        rt.offsetMin = rt.offsetMax = Vector2.zero;
+        return rt;
+    }
+
+    public static RectTransform Box(GameObject go, Vector2 anchoredPos, Vector2 size)
+    {
+        var rt = go.GetComponent<RectTransform>() ?? go.AddComponent<RectTransform>();
+        rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.sizeDelta = size;
+        rt.anchoredPosition = anchoredPos;
+        return rt;
+    }
+
+    public static RectTransform StretchTop(GameObject go, float height)
+    {
+        var rt = go.GetComponent<RectTransform>() ?? go.AddComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0f, 1f);
+        rt.anchorMax = new Vector2(1f, 1f);
+        rt.pivot = new Vector2(0.5f, 1f);
+        rt.sizeDelta = new Vector2(0f, height);
+        rt.anchoredPosition = Vector2.zero;
+        return rt;
+    }
+
+    public static RectTransform StretchFill(GameObject go, float topInset, float bottomInset)
+    {
+        var rt = go.GetComponent<RectTransform>() ?? go.AddComponent<RectTransform>();
+        rt.anchorMin = Vector2.zero;
+        rt.anchorMax = Vector2.one;
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.offsetMin = new Vector2(0f, bottomInset);
+        rt.offsetMax = new Vector2(0f, -topInset);
+        return rt;
+    }
+
+    public static Image Sliced(GameObject go, string spriteName, Color color, bool raycast = false)
+    {
+        var img = go.AddComponent<Image>();
+        img.sprite = GameUiAssetLibrary.Get(spriteName);
+        img.type = Image.Type.Sliced;
+        img.color = color;
+        img.raycastTarget = raycast;
+        return img;
+    }
+
+    public static Image Simple(GameObject go, string spriteName, Color color, bool raycast = false)
+    {
+        var img = go.AddComponent<Image>();
+        img.sprite = GameUiAssetLibrary.Get(spriteName);
+        img.type = Image.Type.Simple;
+        img.preserveAspect = true;
+        img.color = color;
+        img.raycastTarget = raycast;
+        return img;
+    }
+
+    public static Image FillColor(GameObject go, Color color, bool raycast = false)
+    {
+        var img = go.AddComponent<Image>();
+        img.sprite = GameUiAssetLibrary.Get(GameUiAssetLibrary.White);
+        img.type = Image.Type.Simple;
+        img.color = color;
+        img.raycastTarget = raycast;
+        return img;
+    }
+
+    public static TextMeshProUGUI Label(Transform parent, string name, string text, float size,
+        Color color, TextAlignmentOptions align, bool logo = false)
+    {
+        var go = Make(name, parent);
+        Stretch(go);
+        var tmp = go.AddComponent<TextMeshProUGUI>();
+        var font = logo ? GameUiAssetLibrary.LogoFont : GameUiAssetLibrary.TextFont;
+        if (font != null) tmp.font = font;
+        tmp.fontSize = size;
+        tmp.color = color;
+        tmp.alignment = align;
+        tmp.text = text;
+        tmp.richText = false;
+        tmp.enableWordWrapping = false;
+        tmp.overflowMode = TextOverflowModes.Ellipsis;
+        tmp.raycastTarget = false;
+        return tmp;
+    }
+
+    /// <summary>TMP input requires a masked viewport even when it is built outside a prefab.</summary>
+    public static TMP_InputField NativeField(Transform parent, string placeholder, int characterLimit)
+    {
+        var root = Make("Field", parent);
+        Stretch(root);
+        // RowBg is a light sprite: tint it dark midnight blue for a legible inset field.
+        var background = Sliced(root, GameUiAssetLibrary.RowBg, FieldBg, raycast: true);
+
+        var viewport = Make("Viewport", root.transform);
+        Rect(viewport, Vector2.zero, Vector2.one, new Vector2(14f, 6f), new Vector2(-14f, -6f));
+        var vpImg = viewport.AddComponent<Image>();
+        vpImg.color = new Color(0f, 0f, 0f, 0f);
+        vpImg.raycastTarget = false;
+        viewport.AddComponent<RectMask2D>();
+
+        var textGo = Make("Text", viewport.transform);
+        Stretch(textGo);
+        var textTmp = textGo.AddComponent<TextMeshProUGUI>();
+        if (GameUiAssetLibrary.TextFont != null) textTmp.font = GameUiAssetLibrary.TextFont;
+        textTmp.fontSize = 16f;
+        textTmp.color = TextCream;
+        textTmp.alignment = TextAlignmentOptions.Left;
+        textTmp.raycastTarget = false;
+        textTmp.richText = false;
+        textTmp.enableWordWrapping = false;
+        textTmp.overflowMode = TextOverflowModes.Masking;
+
+        var phGo = Make("Placeholder", viewport.transform);
+        Stretch(phGo);
+        var phTmp = phGo.AddComponent<TextMeshProUGUI>();
+        if (GameUiAssetLibrary.TextFont != null) phTmp.font = GameUiAssetLibrary.TextFont;
+        phTmp.fontSize = 16f;
+        phTmp.color = TextDim;
+        phTmp.alignment = TextAlignmentOptions.Left;
+        phTmp.text = placeholder ?? "";
+        phTmp.raycastTarget = false;
+        phTmp.fontStyle = FontStyles.Italic;
+
+        var input = root.AddComponent<TMP_InputField>();
+        input.textViewport = viewport.GetComponent<RectTransform>();
+        input.targetGraphic = background;
+        input.textComponent = textTmp;
+        input.placeholder = phTmp;
+        input.characterLimit = characterLimit;
+        input.lineType = TMP_InputField.LineType.SingleLine;
+        input.caretWidth = 1;
+        input.caretColor = Accent;
+        input.selectionColor = new Color(0.79f, 0.64f, 0.42f, 0.35f);
+        input.restoreOriginalTextOnEscape = false;
+        return input;
+    }
+
+    public static TextMeshProUGUI LabelBox(Transform parent, string name, Vector2 pos, Vector2 size,
+        string text, float fontSize, Color color, TextAlignmentOptions align, bool logo = false)
+    {
+        var cell = Make(name, parent);
+        Box(cell, pos, size);
+        return Label(cell.transform, "Text", text, fontSize, color, align, logo);
+    }
+
+    public static GameObject Tab(Transform parent, string iconSprite, Vector2 pos, float size,
+        bool active, UnityAction onClick)
+    {
+        var cell = Make("Tab", parent);
+        Box(cell, pos, new Vector2(size, size));
+        Simple(cell, iconSprite, active ? IconActive : IconIdle, raycast: onClick != null);
+        if (onClick != null) MakeButton(cell, onClick);
+        return cell;
+    }
+
+    public static GameObject ArrowButton(Transform parent, Vector2 pos, Vector2 size, bool left, UnityAction onClick)
+    {
+        var go = Make(left ? "ArrowLeft" : "ArrowRight", parent);
+        var rt = Box(go, pos, size);
+        Simple(go, GameUiAssetLibrary.Arrow, TextCream, raycast: onClick != null);
+        if (!left) rt.localScale = new Vector3(-1f, 1f, 1f);
+        if (onClick != null) MakeButton(go, onClick);
+        return go;
+    }
+
+    public static Transform RowStrip(Transform body, string label, float y, float cellWidth = 250f)
+    {
+        var row = Make($"Row_{label}", body);
+        var rt = row.GetComponent<RectTransform>() ?? row.AddComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0f, 0.5f);
+        rt.anchorMax = new Vector2(1f, 0.5f);
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.sizeDelta = new Vector2(-40f, 52f);
+        rt.anchoredPosition = new Vector2(0f, y);
+        Sliced(row, GameUiAssetLibrary.RowBg, RowTint);
+
+        var labelGo = Make("Label", row.transform);
+        var lrt = labelGo.GetComponent<RectTransform>() ?? labelGo.AddComponent<RectTransform>();
+        lrt.anchorMin = new Vector2(0f, 0f);
+        lrt.anchorMax = new Vector2(1f, 1f);
+        lrt.offsetMin = new Vector2(22f, 0f);
+        lrt.offsetMax = new Vector2(-cellWidth - 32f, 0f);
+        Label(labelGo.transform, "Text", label, 19f, TextCream, TextAlignmentOptions.Left);
+
+        var cell = Make("Cell", row.transform);
+        var crt = cell.GetComponent<RectTransform>() ?? cell.AddComponent<RectTransform>();
+        crt.anchorMin = new Vector2(1f, 0.5f);
+        crt.anchorMax = new Vector2(1f, 0.5f);
+        crt.pivot = new Vector2(1f, 0.5f);
+        crt.sizeDelta = new Vector2(cellWidth, 42f);
+        crt.anchoredPosition = new Vector2(-16f, 0f);
+        return cell.transform;
+    }
+
+    public static TextMeshProUGUI Stepper(Transform cell, string value, UnityAction onLeft, UnityAction onRight)
+    {
+        var leftGo = Make("Left", cell);
+        Box(leftGo, new Vector2(-100f, 0f), new Vector2(26f, 34f));
+        Simple(leftGo, GameUiAssetLibrary.Arrow, TextCream, raycast: true);
+        MakeButton(leftGo, onLeft);
+
+        var valTmp = LabelBox(cell, "Value", Vector2.zero, new Vector2(130f, 40f),
+            value, 20f, TextCream, TextAlignmentOptions.Center);
+
+        var rightGo = Make("Right", cell);
+        var rightRt = Box(rightGo, new Vector2(100f, 0f), new Vector2(26f, 34f));
+        Simple(rightGo, GameUiAssetLibrary.Arrow, TextCream, raycast: true);
+        rightRt.localScale = new Vector3(-1f, 1f, 1f);
+        MakeButton(rightGo, onRight);
+
+        return valTmp;
+    }
+
+    public static Button MakeButton(GameObject go, UnityAction onClick)
+    {
+        var hit = go.GetComponent<Image>();
+        if (hit == null)
+        {
+            hit = go.AddComponent<Image>();
+            hit.color = new Color(0f, 0f, 0f, 0f);
+        }
+        hit.raycastTarget = true;
+        var btn = go.AddComponent<Button>();
+        btn.targetGraphic = hit;
+        btn.transition = Selectable.Transition.ColorTint;
+        var colors = btn.colors;
+        // The tint multiplies the graphic's own colour, and most surfaces here are dark and
+        // half transparent: a subtle highlight simply does not read on them. These values
+        // brighten and thicken the surface enough to be felt without blowing out the
+        // near-white primary buttons.
+        colors.normalColor = Color.white;
+        colors.highlightedColor = new Color(1.25f, 1.22f, 1.12f, 1.45f);
+        colors.selectedColor = new Color(1.25f, 1.22f, 1.12f, 1.45f);
+        colors.pressedColor = new Color(0.82f, 0.78f, 0.70f, 1.6f);
+        colors.disabledColor = new Color(0.55f, 0.55f, 0.55f, 0.45f);
+        colors.fadeDuration = 0.12f;
+        btn.colors = colors;
+        btn.onClick.AddListener(onClick);
+        SketchMotion.Track(go);
+        return btn;
+    }
+}

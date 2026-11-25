@@ -1,0 +1,474 @@
+using System;
+using CairnMultiplayerMod.Internal.Diagnostics;
+using CairnMultiplayerMod.Internal.Game.Players;
+using Il2Cpp;
+using Il2CppTheGameBakers.Cairn.Netplay;
+using UnityEngine;
+using Object = UnityEngine.Object;
+
+namespace CairnMultiplayerMod.Internal.Game.Roping;
+
+/// <summary>A dedicated native rope connects two harness holders. No synthetic pitons.</summary>
+internal static partial class RopeInterop
+{
+    private static RopeBindingSession _ropeSession;
+    private static NativeRopeBinding _ropeBinding;
+    private static int _ropePartner = -1;
+    private static bool _dropRopeAfterPhysics;
+    public static bool HasRopeTeamAnchors => _ropeSession != null;
+    public static bool IsNativeBelayEngaged => _ropeSession?.State == RopeBindingState.Attached;
+
+    public static bool UpdateRopeTeamAnchor(int partnerId, Harness partner)
+    {
+        try
+        {
+            if (_dropRopeAfterPhysics)
+            {
+                ReleaseAllAnchors();
+                return false;
+            }
+            if (!RopeTeamFallPatch.IsInstalled) return false;
+            var local = ResolveLocalHarness();
+            if (local == null || partner == null) { ReleaseAllAnchors(); return true; }
+            if (_ropeBinding != null && (_ropePartner != partnerId || !_ropeBinding.Matches(local, partner)))
+                ReleaseAllAnchors();
+            if (_ropeSession == null)
+            {
+                var lifeline = local.PersonalLifeline;
+                if (lifeline == null || lifeline.pawn == null) return true;
+                var source = lifeline.securingRope;
+                if (source == null)
+                {
+                    var climbot = ResolveLocalClimbot();
+                    source = climbot != null ? climbot.GetRope() : null;
+                }
+                if (source == null || source.ropePartPrefab == null) return true;
+                if (!TryGetHarnessAttachPosition(local, out var a) || !TryGetHarnessAttachPosition(partner, out var b)) return true;
+                var length = source.MaxLengthMeters;
+                // Inactive companion ropes may not have initialized their maximum yet.
+                if (!float.IsFinite(length) || length <= 0) length = SharedRopeGamemode.SettingsType.Default.ropeLengthMeters;
+                if (!RopeAttachmentPolicy.CanReach(length, Vector3.Distance(a, b))) return false;
+                _ropeBinding = new NativeRopeBinding(local, partner, lifeline, source, length);
+                _ropePartner = partnerId;
+                _ropeSession = new RopeBindingSession(_ropeBinding, Time.realtimeSinceStartupAsDouble);
+            }
+            if (_ropeSession.Tick(Time.realtimeSinceStartupAsDouble)) return true;
+            ReleaseAllAnchors();
+            return false;
+        }
+        catch (Exception ex)
+        {
+            ModLog.Warning("[RopeTeam] Direct harness attachment failed: " + ex.Message);
+            ReleaseAllAnchors();
+            return false;
+        }
+    }
+
+    internal static bool BeforeRopePhysics(LogicalRope rope)
+    {
+        // A retie calls ForceInitialize while the session is still waiting. Skipping
+        // that FixedUpdate aborts the new rope's setup, and the prefab length stays.
+        if (_dropRopeAfterPhysics) return false;
+        if (_ropeBinding?.Owns(rope) != true) return true;
+        if (!IsNativeBelayEngaged) return true;
+        try
+        {
+            // SetLengthInstant rejects calls from Update. This prefix is inside the
+            // rope's own FixedUpdate, which is the only place Cairn applies it.
+            _ropeBinding.ApplyPendingSnap();
+            if (_ropeBinding.Maintain()) return true;
+        }
+        catch (Exception ex) { ModLog.Warning("[RopeTeam] Physics attachment lost: " + ex.Message); }
+        // Destroying the rope from this prefix closes the process. Update drops it.
+        _dropRopeAfterPhysics = true;
+        return false;
+    }
+
+    internal static void AfterRopePhysics(LogicalRope rope)
+    {
+        if (_dropRopeAfterPhysics) return;
+        if (_ropeBinding?.Owns(rope) != true || !IsNativeBelayEngaged) return;
+        try { _ropeBinding.FinishSnapAfterPhysics(); }
+        catch (Exception ex) { ModLog.Warning("[RopeTeam] Could not lay the rope after physics: " + ex.Message); }
+    }
+
+    internal static void AfterRopeRendered(LogicalRopeRenderer renderer)
+    {
+        if (_ropeBinding?.OwnsRenderer(renderer) != true) return;
+        try { _ropeBinding.DrawHarnessLine(); }
+        catch (Exception ex) { ModLog.Warning("[RopeTeam] Could not draw the harness line: " + ex.Message); }
+    }
+
+    public static void ReleaseAllAnchors()
+    {
+        var session = _ropeSession;
+        _ropeSession = null; _ropeBinding = null; _ropePartner = -1;
+        _dropRopeAfterPhysics = false;
+        session?.Dispose();
+    }
+
+    private static Il2CppTheGameBakers.Cairn.RobotPawnController _localClimbotCached;
+    private static int _lastClimbotSearchFrame;
+    private static Il2CppTheGameBakers.Cairn.RobotPawnController ResolveLocalClimbot()
+    {
+        if (_localClimbotCached != null) return _localClimbotCached;
+        if (_lastClimbotSearchFrame != 0 && Time.frameCount - _lastClimbotSearchFrame < 30) return null;
+        _lastClimbotSearchFrame = Time.frameCount;
+        var all = Object.FindObjectsOfType<Il2CppTheGameBakers.Cairn.RobotPawnController>();
+        if (all != null) foreach (var robot in all) if (robot != null) return _localClimbotCached = robot;
+        return null;
+    }
+
+    private sealed class NativeRopeBinding : IRopeBinding
+    {
+        private readonly Harness _local, _partner;
+        private readonly Lifeline _lifeline;
+        private readonly LogicalRope _source;
+        private readonly float _length;
+        private GameObject _root;
+        private LogicalRope _rope;
+        private LogicalRopePart _part;
+        private LogicalRopeRenderer _renderer;
+        private GameObject _outfitWithHarness, _outfitWithoutHarness;
+        private bool _outfitWithHarnessWasActive, _outfitWithoutHarnessWasActive;
+        private int _createdFrame;
+        private Vector3 _lastLocal, _lastPartner;
+        private const int MaxSnapAttempts = 8;
+        private bool _attached, _disposed;
+        private float _pendingSnapLength = -1f;
+        private int _snapAttempts;
+        private bool _harnessLineLogged;
+
+        internal NativeRopeBinding(Harness local, Harness partner, Lifeline lifeline, LogicalRope source, float length)
+        {
+            _local = local; _partner = partner; _lifeline = lifeline;
+            _source = source; _length = length;
+        }
+        internal bool Matches(Harness local, Harness partner)
+            => _local != null && _partner != null && _local.Pointer == local.Pointer && _partner.Pointer == partner.Pointer;
+        internal bool Owns(LogicalRope rope) => _rope != null && rope != null && _rope.Pointer == rope.Pointer;
+        internal bool OwnsRenderer(LogicalRopeRenderer renderer)
+            => _renderer != null && renderer != null && _renderer.Pointer == renderer.Pointer;
+        internal bool HasBothAttachments => !_disposed && _attached && _rope != null && _local != null && _partner != null
+            && _rope.IsAttached(_local.Cast<IRopeHolder>()) && _rope.IsAttached(_partner.Cast<IRopeHolder>());
+
+        public bool IsReady
+        {
+            get
+            {
+                if (_root == null) Create();
+                // Awake/Start and Obi actor loading must finish before creating pins.
+                return Time.frameCount > _createdFrame && _rope != null && _part != null
+                    && _part.obiRope != null && _part.obiRope.isLoaded && _part.pinConstraintHandler != null;
+            }
+        }
+
+        private void Create()
+        {
+            _root = new GameObject("CairnMP.DirectRope");
+            _root.SetActive(false);
+            var solver = _source.ropeParts != null && _source.ropeParts.Count > 0
+                ? _source.ropeParts[0]?.obiRope?.solver : null;
+            _root.transform.SetParent(solver != null ? solver.transform : _source.transform.parent, false);
+            _rope = _root.AddComponent<LogicalRope>();
+            _rope.enabled = false;
+            _rope.intializeOnEnable = false;
+            _rope.ropePartPrefab = _source.ropePartPrefab;
+            _rope.minimalNewDistAfterSplit = _source.minimalNewDistAfterSplit;
+            _rope.minimalRemainingDistAfterAttach = _source.minimalRemainingDistAfterAttach;
+            _rope.minStretchingScale = _source.minStretchingScale;
+            _rope.slackGlobalFactorUser = _source.slackGlobalFactorUser;
+            _rope.slackMinOnAttachedPart = _source.slackMinOnAttachedPart;
+            _rope.slackOnAttachedPart = _source.slackOnAttachedPart;
+            _rope.slackUpdateSpeed = _source.slackUpdateSpeed;
+            _rope.compensateBadSimulationStrength = _source.compensateBadSimulationStrength;
+            _rope.compensateBadSimulationActive = _source.compensateBadSimulationActive;
+            _rope.category = _source.category;
+            _rope.masks = _source.masks;
+            _rope.MaxLengthMeters = _length;
+
+            // Clone only a segment prefab, never a live rope's holder list or particles.
+            var segment = Object.Instantiate(_source.ropePartPrefab.gameObject, _root.transform);
+            _part = segment.GetComponent<LogicalRopePart>();
+            // LogicalRope.ropeParts is normally populated by Unity prefab deserialization.
+            // A LogicalRope created with AddComponent keeps this field null.
+            _rope.ropeParts = new Il2CppSystem.Collections.Generic.List<LogicalRopePart>();
+            _rope.ropeParts.Add(_part);
+            var sourceLine = _source.GetComponent<LineRenderer>() ?? _source.ropePartPrefab.GetComponent<LineRenderer>();
+            var line = _root.AddComponent<LineRenderer>();
+            line.useWorldSpace = true;
+            line.positionCount = 0;
+            line.enabled = false;
+            if (sourceLine != null)
+            {
+                line.sharedMaterial = sourceLine.sharedMaterial;
+                line.widthMultiplier = sourceLine.widthMultiplier;
+                line.widthCurve = sourceLine.widthCurve;
+                line.colorGradient = sourceLine.colorGradient;
+                line.numCapVertices = sourceLine.numCapVertices;
+                line.numCornerVertices = sourceLine.numCornerVertices;
+                line.alignment = sourceLine.alignment;
+                line.textureMode = sourceLine.textureMode;
+                line.shadowCastingMode = sourceLine.shadowCastingMode;
+                line.receiveShadows = sourceLine.receiveShadows;
+            }
+            else
+            {
+                line.widthMultiplier = 0.02f;
+                var shader = Shader.Find("Sprites/Default");
+                if (shader != null) line.material = new Material(shader);
+            }
+            var renderer = _root.AddComponent<LogicalRopeRenderer>();
+            renderer.lineRenderer = line;
+            // AddComponent does not deserialize the prefab links. Without these
+            // references the renderer can use an empty/stale part list, leaving
+            // one end of the visible rope at an invalid world position.
+            renderer.parts = _rope.ropeParts;
+            renderer.shouldUseRopeLineRendererLateUpdate = false;
+            _rope.logicalRopeRenderer = renderer;
+            _rope.shouldUseRopeLineRendererLateUpdate = false;
+            _renderer = renderer;
+            segment.SetActive(true);
+            _root.SetActive(true);
+            // The cloned part's mesh follows its prefab particles in a straight line.
+            // That mesh stays off. The harness line is written onto our renderer.
+            SetRopeRendered(false);
+            _createdFrame = Time.frameCount;
+        }
+
+        public bool Attach()
+        {
+            SynchronizePartnerAttachment();
+            if (_local == null || _partner == null || _lifeline == null
+                || !TryGetHarnessAttachPosition(_local, out _lastLocal)
+                || !TryGetHarnessAttachPosition(_partner, out _lastPartner)
+                || !RopeAttachmentPolicy.CanReach(_length, Vector3.Distance(_lastLocal, _lastPartner))) return false;
+            _rope.ForceInitialize();
+            if (!_rope.IsInitialized) return false;
+            _part.pinConstraintHandler.DetachAll();
+            // Native SharedRopeGamemode uses these same endpoint sides.
+            _rope.AttachTo(_local.Cast<IRopeHolder>(), RopeSide.End, true);
+            _rope.AttachTo(_partner.Cast<IRopeHolder>(), RopeSide.Begin, true);
+            _rope.MaxLengthMeters = _length;
+            if (!RopeAttachmentPolicy.TryGetInitialLength(
+                    _length, Vector3.Distance(_lastLocal, _lastPartner), out var initialLength))
+                return false;
+            // Cairn applies rope length from LogicalRope.FixedUpdate. Calling
+            // SetLengthInstant here, during Update, is rejected and leaves the
+            // cloned part's full-length particles in place. The physics prefix
+            // shortens the rope and lays it between the harnesses.
+            _pendingSnapLength = initialLength;
+            _snapAttempts = 0;
+            _rope.SetCollisionsFilter(_source.category, _source.masks);
+            // SetVisible keeps the simulation running. The cloned mesh stays off,
+            // and the visible line is the short one between the harnesses.
+            _rope.SetVisible(true);
+            _rope.shouldUseRopeLineRendererLateUpdate = false;
+            SetRopeRendered(false);
+            _attached = true;
+            if (!HasBothAttachments) return false;
+            // Never the Lifeline's securing rope. Cairn would hang new quickdraws on it, measure
+            // the rope left from a piton it does not hold (shown as "0 m") and look for that
+            // piton in a secured fall. The climber's own rope and pitons keep protecting them.
+            _rope.enabled = true;
+            SetHarnessVisual();
+            DrawHarnessLine();
+            ModLog.Info("[RopeTeam] Direct harness rope attached (no piton), max=" + _length
+                + ", initial=" + initialLength);
+            return true;
+        }
+
+        // The piton path does not enable a component on Harness itself. PawnSkinHandler
+        // swaps these two Aava outfit meshes; reproducing only that visual switch keeps
+        // the direct cooperative rope out of the piton, inventory and save lifecycles.
+        private void SetHarnessVisual()
+        {
+            try
+            {
+                var mc = LocalPlayerInterop.TryGetMCGameObject();
+                if (mc == null) return;
+                var meshes = mc.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+                if (meshes == null) return;
+                for (var i = 0; i < meshes.Length; i++)
+                {
+                    var mesh = meshes[i];
+                    if (mesh == null) continue;
+                    if (mesh.name == "MC_Outfit")
+                    {
+                        _outfitWithHarness = mesh.gameObject;
+                        _outfitWithHarnessWasActive = _outfitWithHarness.activeSelf;
+                        if (!_outfitWithHarnessWasActive) _outfitWithHarness.SetActive(true);
+                    }
+                    else if (mesh.name == "MC_Outift_NoHarness")
+                    {
+                        _outfitWithoutHarness = mesh.gameObject;
+                        _outfitWithoutHarnessWasActive = _outfitWithoutHarness.activeSelf;
+                        if (_outfitWithoutHarnessWasActive) _outfitWithoutHarness.SetActive(false);
+                    }
+                }
+            }
+            catch (Exception ex) { ModLog.Warning("[RopeTeam] Could not enable harness visual: " + ex.Message); }
+        }
+
+        private void RestoreHarnessVisual()
+        {
+            try
+            {
+                // IsSecured counts real pitons only: one placed during the link keeps its
+                // native harness appearance.
+                var keepHarness = _lifeline != null && _lifeline.IsSecured(1);
+                if (_outfitWithHarness != null)
+                {
+                    var desired = keepHarness || _outfitWithHarnessWasActive;
+                    if (_outfitWithHarness.activeSelf != desired) _outfitWithHarness.SetActive(desired);
+                }
+                if (_outfitWithoutHarness != null)
+                {
+                    var desired = !keepHarness && _outfitWithoutHarnessWasActive;
+                    if (_outfitWithoutHarness.activeSelf != desired) _outfitWithoutHarness.SetActive(desired);
+                }
+            }
+            catch (Exception ex) { ModLog.Warning("[RopeTeam] Could not restore harness visual: " + ex.Message); }
+            finally
+            {
+                _outfitWithHarness = null;
+                _outfitWithoutHarness = null;
+            }
+        }
+
+        internal void ApplyPendingSnap()
+        {
+            if (_pendingSnapLength < 0f || _rope == null || !_rope.IsInitialized) return;
+            var length = _pendingSnapLength;
+            _rope.SetLengthInstant(length);
+            _rope.RequestSetLength(length, false, true);
+            _rope.TeleportOnAttachPoints(RopeTeleportMode.PreTeleportOnLineAndFabrik, false, false);
+            _snapAttempts++;
+        }
+
+        internal void FinishSnapAfterPhysics()
+        {
+            DrawHarnessLine();
+            if (_pendingSnapLength < 0f || _rope == null || !_rope.IsInitialized) return;
+            var length = _pendingSnapLength;
+            LayParticlesOnSegment();
+            _rope.TeleportOnAttachPoints(RopeTeleportMode.PreTeleportOnLineAndFabrik, false, false);
+            float reported;
+            try { reported = _rope.GetLength(false, true); }
+            catch (Exception ex)
+            {
+                ModLog.Warning("[RopeTeam] Could not read the paid-out length: " + ex.Message);
+                reported = float.NaN;
+            }
+            // GetLength stays 0 in game, so this only stops the physics retries.
+            // The visible line is drawn from the harnesses either way.
+            if (!RopeAttachmentPolicy.SnapLanded(length, reported) && _snapAttempts < MaxSnapAttempts)
+                return;
+            _pendingSnapLength = -1f;
+            ModLog.Info("[RopeTeam] Rope length request finished, requested=" + length
+                + ", reported=" + reported);
+        }
+
+        internal void DrawHarnessLine()
+        {
+            SetRopeRendered(false);
+            var line = _renderer != null ? _renderer.lineRenderer : null;
+            if (_disposed || line == null) return;
+            if (_rope != null) _rope.shouldUseRopeLineRendererLateUpdate = false;
+            if (_renderer != null) _renderer.shouldUseRopeLineRendererLateUpdate = false;
+            if (!TryGetHarnessAttachPosition(_local, out var local)
+                || !TryGetHarnessAttachPosition(_partner, out var partner)
+                || !IsFinitePosition(local) || !IsFinitePosition(partner))
+            {
+                line.enabled = false;
+                return;
+            }
+
+            const int pointCount = 12;
+            var span = Vector3.Distance(local, partner);
+            var sag = Mathf.Min(0.35f, span * 0.08f);
+            line.useWorldSpace = true;
+            line.positionCount = pointCount;
+            for (var i = 0; i < pointCount; i++)
+            {
+                var t = i / (float)(pointCount - 1);
+                var point = Vector3.Lerp(local, partner, t);
+                point.y -= 4f * t * (1f - t) * sag;
+                line.SetPosition(i, point);
+            }
+
+            line.enabled = true;
+            if (_harnessLineLogged) return;
+            _harnessLineLogged = true;
+            ModLog.Info("[RopeTeam] Rope drawn between the harnesses, span=" + span.ToString("F2"));
+        }
+
+        private static bool IsFinitePosition(Vector3 point)
+            => float.IsFinite(point.x) && float.IsFinite(point.y) && float.IsFinite(point.z);
+
+        private void LayParticlesOnSegment()
+        {
+            var actor = _part?.obiRope;
+            if (actor == null || !actor.isLoaded) return;
+            int count = actor.activeParticleCount;
+            if (count < 2) return;
+            for (int i = 0; i < count; i++)
+            {
+                float t = i / (float)(count - 1);
+                actor.TeleportParticle(i, Vector3.Lerp(_lastLocal, _lastPartner, t));
+            }
+        }
+
+        private void SetRopeRendered(bool rendered)
+        {
+            if (_part != null)
+            {
+                var renderers = _part.GetComponentsInChildren<Renderer>(true);
+                if (renderers != null)
+                {
+                    for (int i = 0; i < renderers.Length; i++)
+                        if (renderers[i] != null) renderers[i].enabled = rendered;
+                }
+            }
+        }
+
+        public bool Maintain()
+        {
+            SynchronizePartnerAttachment();
+            if (!HasBothAttachments || !TryGetHarnessAttachPosition(_local, out var local)
+                || !TryGetHarnessAttachPosition(_partner, out var partner)) return false;
+            // Teleports must not drag solver particles across the world.
+            if (Vector3.Distance(local, _lastLocal) > 5 || Vector3.Distance(partner, _lastPartner) > 5) return false;
+            _lastLocal = local; _lastPartner = partner;
+            DrawHarnessLine();
+            return true;
+        }
+
+        private void SynchronizePartnerAttachment()
+        {
+            // A remote harness can have physics disabled while its skeleton is animated.
+            // Pins must follow that native skeleton marker, not a stale physics transform.
+            if (_partner == null || _partner.IsActivePhysics()) return;
+            var marker = _partner.skeletonAttachPointRoot;
+            var collider = _partner.GetAttachEnd();
+            if (marker == null || collider == null) return;
+            collider.transform.SetPositionAndRotation(marker.position, marker.rotation);
+            var body = collider.GetComponent<Rigidbody>();
+            if (body != null) { body.position = marker.position; body.rotation = marker.rotation; }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true; _attached = false;
+            try { if (_rope != null && _rope.IsInitialized) _rope.DetachAll(); }
+            catch (Exception ex) { ModLog.Warning("[RopeTeam] Native detach failed: " + ex.Message); }
+            finally
+            {
+                RestoreHarnessVisual();
+                if (_root != null) { _root.SetActive(false); Object.Destroy(_root); }
+                _root = null; _rope = null; _part = null; _renderer = null;
+            }
+        }
+    }
+}
