@@ -81,6 +81,7 @@ Copy-Item "$ModBin/Concentus.dll" "$PayloadMod/mods/"
 Copy-Item "$ModBin/NAudio.Core.dll" "$PayloadMod/mods/"
 Copy-Item "$ModBin/NAudio.Wasapi.dll" "$PayloadMod/mods/"
 Copy-Item "THIRD-PARTY-NOTICES.txt" "$PayloadMod/mods/"
+Copy-Item "LICENSE" "$PayloadMod/"
 $ModZipPath = Join-Path $Dist $ModZipName
 if (Test-Path $ModZipPath)
 { Remove-Item -Force $ModZipPath

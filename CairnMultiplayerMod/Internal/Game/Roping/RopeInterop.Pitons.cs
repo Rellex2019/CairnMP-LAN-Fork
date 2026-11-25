@@ -32,6 +32,7 @@ internal static partial class RopeInterop
         _lastLifelineSearchFrame = 0;
         _detachRetryAt.Clear();
         _localClimbControllerCached = null;
+        _pitons.AfterSceneReset(Time.unscaledTime);
     }
 
     /// <summary>Leaving the session: the other climbers' pitons come off this Lifeline.</summary>

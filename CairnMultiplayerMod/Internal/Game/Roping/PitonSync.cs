@@ -155,6 +155,31 @@ internal sealed class PitonSync
         _settleUntil = now + SettleSeconds;
     }
 
+    /// <summary>A scene was rebuilt. Pointer equality cannot be trusted here: the allocator
+    /// may hand the new Lifeline the same address, so unbind explicitly before it resolves.</summary>
+    internal void AfterSceneReset(double now)
+    {
+        foreach (var id in _ownByPointer.Values)
+            if (!_ownUnbound.Contains(id)) _ownUnbound.Add(id);
+        _ownByPointer.Clear();
+
+        _drop.Clear();
+        foreach (var pair in _remote)
+        {
+            var remote = pair.Value;
+            remote.Pointer = IntPtr.Zero;
+            if (remote.State == RemoteState.Withdrawn) _drop.Add(pair.Key);
+            else if (remote.State is RemoteState.Live or RemoteState.Spawning) remote.State = RemoteState.Pending;
+        }
+        foreach (var id in _drop) _remote.Remove(id);
+        _remoteByPointer.Clear();
+        _foreign.Clear();
+
+        _settling = true;
+        _afterReload = true;
+        _settleUntil = now + SettleSeconds;
+    }
+
     /// <summary>The host says this piton exists. Nothing native happens until a reconcile.</summary>
     internal void Know(ServerPitonPlaced placed)
     {

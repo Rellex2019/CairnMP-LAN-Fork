@@ -220,6 +220,36 @@ public sealed class PitonSyncTests
     }
 
     [Fact]
+    public void AfterAReloadOurPitonsMissingFromTheSaveAreAnnouncedAgain()
+    {
+        var sync = Started(out var t);
+        var oldId = sync.Reconcile(Placed((1, A)), null, t += Settled).Announce[0].LocalId;
+        sync.RememberLocal(oldId, ClientPiton(oldId, A));
+
+        sync.OnLifeline(ReloadedLifeline, t += 1);
+        var actions = sync.Reconcile(Placed(), null, t += Settled);
+
+        Assert.Equal(new[] { oldId }, actions.Removed);
+        var restored = Assert.Single(actions.Restore);
+        Assert.NotEqual(oldId, restored.PitonId);
+        Assert.Equal(A.X, restored.PosX, 4);
+    }
+
+    [Fact]
+    public void ASceneResetRestoresPitonsEvenWhenTheLifelinePointerIsReused()
+    {
+        var sync = Started(out var t);
+        var oldId = sync.Reconcile(Placed((1, A)), null, t += Settled).Announce[0].LocalId;
+        sync.RememberLocal(oldId, ClientPiton(oldId, A));
+
+        sync.AfterSceneReset(t += 1);
+        sync.OnLifeline(Lifeline, t + 0.1);
+        var actions = sync.Reconcile(Placed(), null, t + Settled + 0.1);
+
+        Assert.Single(actions.Restore);
+    }
+
+    [Fact]
     public void JoiningRecognisesOurSavedCopiesOfPitonsTheHostAlreadyHas()
     {
         var sync = new PitonSync();

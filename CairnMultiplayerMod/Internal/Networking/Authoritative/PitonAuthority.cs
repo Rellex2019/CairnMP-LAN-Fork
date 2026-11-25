@@ -25,6 +25,7 @@ internal sealed class PitonAuthority
     private uint _nextAuthId = 1;
     internal const int MaxPitonsPerPlayer = 128;
     internal const int MaxPitonsPerSession = 1024;
+    private const float SamePitonMeters = 0.05f;
     private readonly PeerBudget _placementBudget;
     private readonly PeerBudget _recoveryBudget;
 
@@ -126,10 +127,10 @@ internal sealed class PitonAuthority
 
     internal void RemovePlayer(int playerId)
     {
-        var ids = new List<uint>();
+        var keys = new List<(int playerId, uint clientId)>();
         foreach (var key in _authIdByClient.Keys)
-            if (key.playerId == playerId) ids.Add(key.clientId);
-        foreach (var id in ids) Remove(playerId, id, despawnLocalGhost: true, exceptPlayerId: playerId);
+            if (key.playerId == playerId) keys.Add(key);
+        foreach (var key in keys) _authIdByClient.Remove(key);
         _placementBudget.Remove(playerId);
         _recoveryBudget.Remove(playerId);
     }
@@ -137,7 +138,11 @@ internal sealed class PitonAuthority
 
     private void Place(int playerId, uint clientId, ServerPitonPlaced fields, bool spawnLocalGhost, int exceptPlayerId)
     {
-        if (_authIdByClient.ContainsKey((playerId, clientId))) return;
+        if (_authIdByClient.TryGetValue((playerId, clientId), out var existing))
+        {
+            if (_pitons.TryGetValue(existing, out var previous) && SamePiton(previous, fields)) return;
+            _authIdByClient.Remove((playerId, clientId));
+        }
         if (_pitons.Count >= MaxPitonsPerSession || _nextAuthId == uint.MaxValue) return;
         var owned = 0;
         foreach (var key in _authIdByClient.Keys)
@@ -206,6 +211,15 @@ internal sealed class PitonAuthority
             _sink.SendTo(owner.playerId, PacketId.ServerPitonRecovered,
                 new ServerPitonRecovered { ByPlayerId = requesterId, PitonId = owner.clientId },
                 NetReliability.ReliableOrdered);
+    }
+
+    private static bool SamePiton(ServerPitonPlaced a, ServerPitonPlaced b)
+    {
+        var dx = a.PosX - b.PosX;
+        var dy = a.PosY - b.PosY;
+        var dz = a.PosZ - b.PosZ;
+        return dx * dx + dy * dy + dz * dz <= SamePitonMeters * SamePitonMeters
+               && a.Quality == b.Quality && a.ItemId == b.ItemId;
     }
 
     private uint ResolveAuthId(int playerId, uint clientId)

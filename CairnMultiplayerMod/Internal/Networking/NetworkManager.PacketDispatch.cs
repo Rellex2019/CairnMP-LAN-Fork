@@ -23,7 +23,10 @@ internal sealed partial class NetworkManager
             && id != PacketId.ServerStartGame
             && id != PacketId.ServerDirectSessionInfo
             && id != PacketId.ServerPlayerJoined
-            && id != PacketId.ServerPlayerLeft)
+            && id != PacketId.ServerPlayerLeft
+            && id != PacketId.ServerPitonPlaced
+            && id != PacketId.ServerPitonRemoved
+            && id != PacketId.ServerPitonRecovered)
         {
             return;
         }

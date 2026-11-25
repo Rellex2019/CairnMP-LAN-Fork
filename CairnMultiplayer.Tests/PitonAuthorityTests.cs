@@ -23,7 +23,7 @@ public sealed class PitonAuthorityTests
     }
 
     [Fact]
-    public void PlacementQuotaSurvivesSnapshotAndReleasesOnDeparture()
+    public void PlacementQuotaReleasesOnDepartureWithoutWithdrawingPitons()
     {
         var sink = new RecordingSink();
         double time = 0;
@@ -38,13 +38,36 @@ public sealed class PitonAuthorityTests
         authority.SendSnapshotTo(20);
         Assert.Equal(PitonAuthority.MaxPitonsPerPlayer, sink.Sends.Count);
         authority.RemovePlayer(10);
-        Assert.Equal(PitonAuthority.MaxPitonsPerPlayer, removed);
+        Assert.Equal(0, removed);
         sink.Sends.Clear();
         authority.SendSnapshotTo(20);
-        Assert.Empty(sink.Sends);
-        PlaceFromClient(authority, 10, 1);
-        authority.SendSnapshotTo(20);
-        Assert.Single(sink.Sends);
+        Assert.Equal(PitonAuthority.MaxPitonsPerPlayer, sink.Sends.Count);
+
+        sink.Broadcasts.Clear();
+        for (uint id = PitonAuthority.MaxPitonsPerPlayer + 1;
+             id <= PitonAuthority.MaxPitonsPerPlayer * 2; id++)
+        {
+            time++;
+            PlaceFromClient(authority, 10, id);
+        }
+        Assert.Equal(PitonAuthority.MaxPitonsPerPlayer, sink.Broadcasts.Count);
+    }
+
+    [Fact]
+    public void RejoiningClientCanReuseLocalPitonIdsAtNewPlaces()
+    {
+        var sink = new RecordingSink();
+        var authority = new PitonAuthority(sink, _ => { }, _ => { });
+
+        Send(authority, 10, PacketId.ClientPitonPlaced, PlacementAt(1, 1f));
+        Send(authority, 10, PacketId.ClientPitonPlaced, PlacementAt(1, 10f));
+
+        Assert.Equal(2, sink.Broadcasts.Count);
+        var first = Assert.IsType<ServerPitonPlaced>(sink.Broadcasts[0].Packet);
+        var second = Assert.IsType<ServerPitonPlaced>(sink.Broadcasts[1].Packet);
+        Assert.NotEqual(first.PitonId, second.PitonId);
+        Assert.Equal(1f, first.PosX, 4);
+        Assert.Equal(10f, second.PosX, 4);
     }
 
     [Fact]
@@ -167,6 +190,18 @@ public sealed class PitonAuthorityTests
     {
         PitonId = clientPitonId,
         PosX = 1f,
+        PosY = 2f,
+        PosZ = 3f,
+        RotW = 1f,
+        Quality = 1,
+        PitonHp = 100,
+        ItemId = 5,
+    };
+
+    private static ClientPitonPlaced PlacementAt(uint clientPitonId, float x) => new()
+    {
+        PitonId = clientPitonId,
+        PosX = x,
         PosY = 2f,
         PosZ = 3f,
         RotW = 1f,

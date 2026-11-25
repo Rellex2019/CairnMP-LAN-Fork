@@ -15,6 +15,10 @@
 
 ---
 
+> [!IMPORTANT]
+> This is a [fork of the original CairnMP project](https://github.com/CairnMP/cairnmp-mod). This version includes significant modifications to the networking layer to support LAN connections. The
+> original project relies on Steam relay.
+
 CairnMP runs inside Cairn through MelonLoader (IL2CPP) and connects players over
 a Steam relay (P2P). The lobby owner is authoritative, so no dedicated server is
 required.

@@ -662,6 +662,7 @@ internal sealed partial class NetworkManager
     {
         if (!PacketValidation.IsValidPose(pkt.X, pkt.Y, pkt.Z, pkt.YawDeg)) return;
         if (!_remotePlayers.TryGetValue(playerId, out var p)) return;
+        var wasInGame = p.State == PlayerState.InGame;
         p.X = pkt.X;
         p.Y = pkt.Y;
         p.Z = pkt.Z;
@@ -669,6 +670,16 @@ internal sealed partial class NetworkManager
         p.SceneName = pkt.SceneName;
         p.State = pkt.State;
         p.LastUpdateTime = DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerSecond;
+
+        if (!wasInGame && p.State == PlayerState.InGame && !p.PitonsReplayedOnEntry)
+        {
+            Pitons.SendSnapshotTo(playerId);
+            p.PitonsReplayedOnEntry = true;
+        }
+        else if (p.State != PlayerState.InGame)
+        {
+            p.PitonsReplayedOnEntry = false;
+        }
     }
 
     private static byte[] BuildPayload(PacketId id, IPacket packet)

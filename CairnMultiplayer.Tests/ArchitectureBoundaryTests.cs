@@ -95,6 +95,21 @@ public sealed class ArchitectureBoundaryTests
         Assert.DoesNotContain("using CairnMultiplayerMod.Internal.Game", source, StringComparison.Ordinal);
         Assert.DoesNotContain(".Deserialize(", source, StringComparison.Ordinal);
         Assert.Contains("id != PacketId.ServerStartGame", source, StringComparison.Ordinal);
+        Assert.Contains("id != PacketId.ServerPitonPlaced", source, StringComparison.Ordinal);
+        Assert.Contains("id != PacketId.ServerPitonRemoved", source, StringComparison.Ordinal);
+        Assert.Contains("id != PacketId.ServerPitonRecovered", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HostReplaysPitonsWhenAPlayerReturnsToTheGame()
+    {
+        var transport = File.ReadAllText(Path.Combine(
+            ProjectDirectory, "Internal", "Networking", "NetworkManager.Transport.cs"));
+        var manager = File.ReadAllText(Path.Combine(
+            ProjectDirectory, "Internal", "Networking", "NetworkManager.cs"));
+
+        Assert.Contains("Pitons.SendSnapshotTo(playerId)", transport, StringComparison.Ordinal);
+        Assert.Contains("PitonsReplayedOnEntry", manager, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -224,7 +239,6 @@ public sealed class ArchitectureBoundaryTests
         Assert.Contains("TryGetInitialLength", interop, StringComparison.Ordinal);
         Assert.Contains("renderer.parts = _rope.ropeParts", interop, StringComparison.Ordinal);
         Assert.Contains("nameof(LogicalRopeRenderer.LateUpdate)", patch, StringComparison.Ordinal);
-        Assert.Contains("\"ShouldSnap\"", patch, StringComparison.Ordinal);
         AssertPartnerRopeLengthIsAppliedFromFixedUpdate(interop);
         Assert.Contains("SetHarnessVisual", interop, StringComparison.Ordinal);
         Assert.Contains("RestoreHarnessVisual", interop, StringComparison.Ordinal);

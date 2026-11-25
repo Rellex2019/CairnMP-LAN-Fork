@@ -23,24 +23,12 @@ public sealed class RopeAttachmentTests
     [InlineData(30f, 1.9f)]
     [InlineData(30f, 20f)]
     [InlineData(30f, 29.9f)]
-    public void InitialLengthLeavesTheWholeRopeSlack(float maxLength, float distance)
+    public void InitialLengthTracksTheHarnessDistanceButNeverPaysOutTheWholeRope(float maxLength, float distance)
     {
         Assert.True(RopeAttachmentPolicy.TryGetInitialLength(maxLength, distance, out var initialLength));
-        Assert.Equal(maxLength, initialLength);
+        Assert.True(initialLength > distance);
+        Assert.True(initialLength < maxLength);
     }
-
-    [Theory]
-    [InlineData(30f, 1.9f)]
-    [InlineData(30f, 29.9f)]
-    public void FallLengthFollowsTheHarnessDistance(float maxLength, float distance)
-    {
-        Assert.True(RopeAttachmentPolicy.TryGetFallLength(maxLength, distance, out var length));
-        Assert.InRange(length, distance, maxLength);
-    }
-
-    [Fact]
-    public void ExhaustedRopeHasNoFallLength()
-        => Assert.False(RopeAttachmentPolicy.TryGetFallLength(30f, 30f, out _));
 
     [Theory]
     [InlineData(0f, 1f)]

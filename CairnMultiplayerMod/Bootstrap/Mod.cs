@@ -164,8 +164,7 @@ public partial class Mod : MelonMod
             new WeatherAdapter(),
             new WorldAdapter(), _voice, new LifeAdapter(), new SpectatorAdapter());
 
-        Rope = new RopeCoupleController(Network, _runtimeState,
-            () => StartGame != null && StartGame.HasLastStartGame);
+        Rope = new RopeCoupleController(Network, _runtimeState);
         Player = new PlayerStateBroadcaster(
             Network, _runtimeState, Rope.Reset, () => Bivouac?.BlocksGameplaySync() == true,
             isSpeaking: playerId => _voice?.IsSpeaking(playerId) == true);

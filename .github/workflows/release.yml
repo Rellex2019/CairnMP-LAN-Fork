@@ -114,6 +114,10 @@ jobs:
           $name = "cairnmp-mod-$env:VERSION.zip"
           $hash = (Get-FileHash -Algorithm SHA256 "dist/$name").Hash.ToLowerInvariant()
           [IO.File]::WriteAllText("dist/$name.sha256", "$hash  $name`n")
+          $sourceName = "cairnmp-mod-$env:VERSION-source.zip"
+          git archive --format=zip --prefix="cairnmp-mod-$env:VERSION/" -o "dist/$sourceName" HEAD
+          $sourceHash = (Get-FileHash -Algorithm SHA256 "dist/$sourceName").Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("dist/$sourceName.sha256", "$sourceHash  $sourceName`n")
 
       - name: Publish the GitHub release
         shell: bash
@@ -127,6 +131,7 @@ jobs:
           if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
           gh release create "$TAG" \
             "dist/cairnmp-mod-$VERSION.zip" "dist/cairnmp-mod-$VERSION.zip.sha256" \
+            "dist/cairnmp-mod-$VERSION-source.zip" "dist/cairnmp-mod-$VERSION-source.zip.sha256" \
             --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "$TITLE" --notes-file "$RUNNER_TEMP/release-notes.md" \
             "${flags[@]}"

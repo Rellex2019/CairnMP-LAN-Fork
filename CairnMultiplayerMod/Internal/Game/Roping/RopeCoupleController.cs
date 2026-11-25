@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using CairnMultiplayer.Shared;
 using CairnMultiplayerMod.Internal.Diagnostics;
@@ -24,18 +23,15 @@ internal sealed class RopeCoupleController
 
     private readonly NetworkManager _network;
     private readonly RuntimeState _state;
-    private readonly Func<bool> _canResumeRun;
 
     // Hard teardown is broadcast once per episode to avoid reliable-packet spam.
     private bool _ropeHardTornDown;
-    private bool _ropeHintShown;
     private float _deadSince = -1f;
 
-    internal RopeCoupleController(NetworkManager network, RuntimeState state, Func<bool> canResumeRun = null)
+    internal RopeCoupleController(NetworkManager network, RuntimeState state)
     {
         _network = network;
-        _state = state ?? throw new ArgumentNullException(nameof(state));
-        _canResumeRun = canResumeRun ?? (() => false);
+        _state = state ?? throw new System.ArgumentNullException(nameof(state));
     }
 
     internal void Tick()
@@ -52,14 +48,6 @@ internal sealed class RopeCoupleController
         if (!InputCaptureState.IsKeyboardCaptured)
             HandleRopeClipInput();
         TickRopeTeam();
-
-        if (!_ropeHintShown && _state.ModeRules.Mode == MultiplayerMode.RopeTeam)
-        {
-            _ropeHintShown = true;
-            ModLog.Info($"[RopeTeam] Cooperative rope is manual: press {ToggleKeyName} within " +
-                        $"{RopeClipRangeMeters:F0}m of a teammate's ghost. The L rope belays both climbers; " +
-                        "a downed teammate needs a standing rescuer with a healing item.");
-        }
     }
 
     /// <summary>
@@ -74,7 +62,6 @@ internal sealed class RopeCoupleController
         bool gameOver = GameLifecycleService.TryGetGameLifecycle(out var lifecycle, out _)
                         && lifecycle == CairnGameLifecycleState.GameOver;
         bool atMainMenu = SceneRoles.IsMainMenuArea(_state.CurrentScene);
-        bool returningToRun = atMainMenu && connected && _canResumeRun();
 
         if (!dead) _deadSince = -1f;
         else if (_deadSince < 0f) _deadSince = Time.unscaledTime;
@@ -84,7 +71,7 @@ internal sealed class RopeCoupleController
         bool downed = dead && (DeathScreenPatch.IsHoldingDeath
                                || Time.unscaledTime - _deadSince < DeathDecisionGraceSeconds);
 
-        bool hardUnsafe = !connected || (dead && !downed) || gameOver || (atMainMenu && !returningToRun);
+        bool hardUnsafe = !connected || (dead && !downed) || gameOver || atMainMenu;
 
         if (hardUnsafe)
         {
@@ -213,14 +200,12 @@ internal sealed class RopeCoupleController
             || remote == null || remote.State != PlayerState.InGame
             || !RemotePlayerManager.TryGetGhostHarness(partner, out var partnerAnchor))
         {
-            if (RopeInterop.IsLocalFalling()) return;
             if (RopeInterop.HasRopeTeamAnchors) RopeInterop.ReleaseAllAnchors();
             return;
         }
 
         if (!RopeInterop.UpdateRopeTeamAnchor(partner, partnerAnchor))
         {
-            if (RopeInterop.IsLocalFalling()) return;
             _network.SendRopeClip(partner, false);
             RopeLinkState.Apply(self, partner, false);
             RopeInterop.ReleaseAllAnchors();
@@ -233,7 +218,6 @@ internal sealed class RopeCoupleController
         RopeLinkState.Clear();
         RopeInterop.ReleaseAllAnchors();
         _ropeHardTornDown = false;
-        _ropeHintShown = false;
     }
 
     /// <summary>Logical links intentionally survive scene streaming and clear only on disconnect.</summary>

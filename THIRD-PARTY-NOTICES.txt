@@ -37,7 +37,7 @@ Opus open-source contributors. The source code for these libraries is freely ava
 at https://gitlab.xiph.org/xiph/opus/-/tags/v1.5.2, and all binaries are being
 redistributed to you under the same terms of the general Opus license dictated above.
 
-NAudio.Core / NAudio.Wasapi 2.2.1 — https://github.com/naudio/NAudio
+NAudio.Core / NAudio.Wasapi 2.4.0 — https://github.com/naudio/NAudio
 Copyright 2020 Mark Heath
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of

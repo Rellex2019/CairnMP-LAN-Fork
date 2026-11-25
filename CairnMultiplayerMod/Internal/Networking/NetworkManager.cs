@@ -205,6 +205,7 @@ namespace CairnMultiplayerMod.Internal.Networking
         public float YawDeg;
         public string SceneName;
         public PlayerState State;
+        public bool PitonsReplayedOnEntry;
         public double LastUpdateTime;
 
         public byte BoneCount;
