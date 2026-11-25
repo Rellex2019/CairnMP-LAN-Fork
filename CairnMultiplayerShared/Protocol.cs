@@ -99,6 +99,8 @@ public enum PacketId : byte
     ClientFeatureStream = 19,
     /// <summary>The sender took up a piton another climber placed.</summary>
     ClientPitonRecovered = 20,
+    /// <summary>Direct TCP handshake, used instead of Steam lobby presence.</summary>
+    ClientDirectHandshake = 21,
 
     ServerHandshakeAck = 64,
     ServerHandshakeReject = 65,
@@ -122,6 +124,9 @@ public enum PacketId : byte
     ServerFeatureStream = 89,
     /// <summary>Tells a piton's owner that another climber took it up.</summary>
     ServerPitonRecovered = 90,
+    /// <summary>Session rules sent to a direct TCP client before gameplay starts.</summary>
+    ServerDirectSessionInfo = 91,
+    ServerCurrentRun = 92,
 }
 
 /// <summary>

@@ -89,4 +89,33 @@ public sealed class LobbyRegressionTests
     [InlineData(11u, 10)]
     public void CorruptLobbyCountsFailBeforeAnyNativeSlotIsRead(uint count, int limit)
         => Assert.Throws<InvalidDataException>(() => LobbyListResultCount.Validate(count, limit));
+
+    [Theory]
+    [InlineData(2UL)]
+    [InlineData(3UL)]
+    public void RejoiningClientKeepsOnlyTheCurrentSelfRow(ulong assignedPeerId)
+    {
+        using var session = new ProbeSession();
+        session.Add(2UL, "Climber", isHost: false, isSelf: true);
+        session.Add(1UL, "Host", isHost: true, isSelf: false);
+        session.Add(assignedPeerId, "Climber", isHost: false, isSelf: true);
+        session.Add(1UL, "Host", isHost: true, isSelf: false);
+
+        Assert.Equal(2, session.Members.Count);
+        var self = Assert.Single(session.Members, m => m.IsSelf);
+        Assert.Equal(assignedPeerId, self.SteamId);
+    }
+
+    private sealed class ProbeSession : DirectTransportSession
+    {
+        public override ulong HostPeerId => 1;
+
+        public void Add(ulong peerId, string name, bool isHost, bool isSelf, int playerId = 0)
+            => SetMember(peerId, name, isHost, isSelf, worldUnavailable: false, playerId);
+
+        public override void Send(ulong peerId, byte[] payload, bool reliable = true) { }
+        public override void Broadcast(byte[] payload, bool reliable = true) { }
+        public override void Pump() { }
+        protected override void Close() { }
+    }
 }

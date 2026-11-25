@@ -15,6 +15,8 @@ internal sealed class ResilientMultiplayerPanel : IMultiplayerPanel
     private bool _connected;
     private string _status = "";
     private string _lobbyName = "";
+    private bool _canReturnToGame;
+    private IMultiplayerSession _session;
     private IReadOnlyList<LobbyEntry> _lastLobbies = Array.Empty<LobbyEntry>();
 
     public event Action<HostConfig> OnHostRequested;
@@ -23,6 +25,8 @@ internal sealed class ResilientMultiplayerPanel : IMultiplayerPanel
     public event Action<ulong> OnJoinByLobbyIdRequested;
     public event Action OnDisconnectRequested;
     public event Action OnStartRequested;
+    public event Action OnReturnToGameRequested;
+    public event Action<DirectConnectConfig> OnJoinDirectRequested;
     public event Action OnPanelClosed;
 
     public bool IsVisible => _visible;
@@ -79,6 +83,18 @@ internal sealed class ResilientMultiplayerPanel : IMultiplayerPanel
         Try(panel => panel.SetCurrentLobbyName(_lobbyName));
     }
 
+    public void SetCanReturnToGame(bool canReturn)
+    {
+        _canReturnToGame = canReturn;
+        Try(panel => panel.SetCanReturnToGame(_canReturnToGame));
+    }
+
+    public void SetSession(IMultiplayerSession session)
+    {
+        _session = session;
+        Try(panel => panel.SetSession(_session));
+    }
+
     public void Tick(float dt)
     {
         Try(panel => panel.Tick(dt));
@@ -128,6 +144,8 @@ internal sealed class ResilientMultiplayerPanel : IMultiplayerPanel
         _active = _fallbackFactory();
         Wire(_active);
 
+        if (_session != null) _active.SetSession(_session);
+        _active.SetCanReturnToGame(_canReturnToGame);
         _active.SetCurrentLobbyName(_lobbyName);
         _active.SetBrowserLobbies(_lastLobbies);
         if (_connecting) _active.SetConnecting(_status);
@@ -145,6 +163,8 @@ internal sealed class ResilientMultiplayerPanel : IMultiplayerPanel
         panel.OnJoinByLobbyIdRequested += ForwardJoin;
         panel.OnDisconnectRequested += ForwardDisconnect;
         panel.OnStartRequested += ForwardStart;
+        panel.OnReturnToGameRequested += ForwardReturnToGame;
+        panel.OnJoinDirectRequested += ForwardJoinDirect;
         panel.OnPanelClosed += ForwardClosed;
     }
 
@@ -156,6 +176,8 @@ internal sealed class ResilientMultiplayerPanel : IMultiplayerPanel
         panel.OnJoinByLobbyIdRequested -= ForwardJoin;
         panel.OnDisconnectRequested -= ForwardDisconnect;
         panel.OnStartRequested -= ForwardStart;
+        panel.OnReturnToGameRequested -= ForwardReturnToGame;
+        panel.OnJoinDirectRequested -= ForwardJoinDirect;
         panel.OnPanelClosed -= ForwardClosed;
     }
 
@@ -165,6 +187,8 @@ internal sealed class ResilientMultiplayerPanel : IMultiplayerPanel
     private void ForwardJoin(ulong id) => OnJoinByLobbyIdRequested?.Invoke(id);
     private void ForwardDisconnect() => OnDisconnectRequested?.Invoke();
     private void ForwardStart() => OnStartRequested?.Invoke();
+    private void ForwardReturnToGame() => OnReturnToGameRequested?.Invoke();
+    private void ForwardJoinDirect(DirectConnectConfig config) => OnJoinDirectRequested?.Invoke(config);
     private void ForwardClosed()
     {
         _visible = false;

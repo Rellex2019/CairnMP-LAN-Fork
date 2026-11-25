@@ -15,6 +15,8 @@ namespace CairnMultiplayerMod.Internal.Networking
     internal sealed class LobbyMember
     {
         public ulong SteamId { get; init; }
+        public ulong PeerId => SteamId;
+        public int PlayerId { get; init; }
         public string Name { get; init; } = "";
         public bool IsHost { get; init; }
         public bool IsSelf { get; init; }
@@ -37,7 +39,7 @@ namespace CairnMultiplayerMod.Internal.Networking
     /// pump there), so there is no marshalling to do when touching Unity
     /// objects.
     /// </summary>
-    internal sealed partial class SteamLobbyManager : IDisposable
+    internal sealed partial class SteamLobbyManager : IDisposable, IMultiplayerSession
     {
         private const string KeyCairnApp = "cairnmp_app";
         private const string KeyCode = "code";

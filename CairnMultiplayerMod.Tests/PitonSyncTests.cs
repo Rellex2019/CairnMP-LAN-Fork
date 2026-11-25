@@ -145,17 +145,23 @@ public sealed class PitonSyncTests
     }
 
     [Fact]
-    public void AfterAReloadOurPitonsThatDidNotComeBackAreWithdrawn()
+    public void AfterAReloadOurPitonsThatDidNotComeBackAreReplaced()
     {
         var sync = Started(out var t);
         var announced = sync.Reconcile(Placed((1, A), (2, B)), null, t += Settled).Announce;
         var lost = announced.Find(entry => entry.Pointer == new IntPtr(2)).LocalId;
+        sync.RememberLocal(lost, ClientPiton(lost, B));
 
         sync.OnLifeline(ReloadedLifeline, t += 1);
         sync.Reconcile(Placed((11, A)), null, t);
         var actions = sync.Reconcile(Placed((11, A)), null, t + Settled);
 
         Assert.Equal(new[] { lost }, actions.Removed);
+        var restored = Assert.Single(actions.Restore);
+        Assert.NotEqual(lost, restored.PitonId);
+        Assert.InRange(restored.PosX, B.X - 0.001f, B.X + 0.001f);
+        Assert.Equal(B.Y, restored.PosY, 4);
+        Assert.Equal(B.Z, restored.PosZ, 4);
         Assert.Empty(actions.Announce);
     }
 
@@ -179,6 +185,22 @@ public sealed class PitonSyncTests
         sync.OnLifeline(ReloadedLifeline, t += 1);
         Assert.Empty(sync.Reconcile(Placed(), null, t).Spawn);
         var actions = sync.Reconcile(Placed(), null, t + Settled);
+
+        Assert.Equal(7u, Assert.Single(actions.Spawn).PitonId);
+    }
+
+    [Fact]
+    public void AReplayedSnapshotBringsBackAnAbandonedRemotePiton()
+    {
+        var sync = WithLiveRemote(out var t);
+
+        sync.OnLifeline(ReloadedLifeline, t += 1);
+        Assert.Single(sync.Reconcile(Placed(), null, t += Settled).Spawn);
+        sync.Spawned(7, new IntPtr(80));
+        sync.Reconcile(Placed(), C + new Vector3(50, 0, 0), t += 0.1);
+
+        sync.Know(Piton(7, C));
+        var actions = sync.Reconcile(Placed(), null, t + PitonSync.SpawnRetrySeconds + 1);
 
         Assert.Equal(7u, Assert.Single(actions.Spawn).PitonId);
     }
@@ -278,4 +300,7 @@ public sealed class PitonSyncTests
 
     private static ServerPitonPlaced Piton(uint id, Vector3 at)
         => new() { FromPlayerId = 2, PitonId = id, PosX = at.X, PosY = at.Y, PosZ = at.Z, RotW = 1, Quality = 1, PitonHp = 100, ItemId = 5 };
+
+    private static ClientPitonPlaced ClientPiton(uint id, Vector3 at)
+        => new() { PitonId = id, PosX = at.X, PosY = at.Y, PosZ = at.Z, RotW = 1, Quality = 1, PitonHp = 100, ItemId = 5 };
 }

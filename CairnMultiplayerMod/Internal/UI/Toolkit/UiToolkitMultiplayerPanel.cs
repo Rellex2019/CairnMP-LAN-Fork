@@ -12,7 +12,7 @@ namespace CairnMultiplayerMod.Internal.UI.Toolkit;
 
 internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
 {
-    private readonly SteamLobbyManager _lobby;
+    private IMultiplayerSession _session;
     private readonly Func<ClimbWorld, string> _whyUnavailable;
     private enum Screen
     {
@@ -34,7 +34,7 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
 
     private Label _steamNameLabel;
     private TextField _lobbyNameField;
-    private TextField _codeField;
+    private TextField _codeField, _addressField, _hostPortField, _joinPortField;
     private SegmentControl _homeModeSegment;
     private VisualElement _hostPane;
     private VisualElement _joinPane;
@@ -54,6 +54,10 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
     private string _lobbyWorldIssue;
     private Label _connectedMode;
     private SegmentControl _visibilitySegment;
+    private VisualElement _visibilityColumn;
+    private VisualElement _portColumn;
+    private SegmentControl _connectionSegment;
+    private Button _directJoinButton;
 
     private VisualElement _lobbyList;
     private Label _browserEmptyLabel;
@@ -64,15 +68,18 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
     private Label _connectedCount;
     private Button _copyButton;
     private Button _startButton;
+    private Button _returnButton;
     private Label _startHint;
 
     private Screen _currentScreen = Screen.Home;
     private bool _visible;
     private bool _isConnected;
     private bool _isConnecting;
+    private bool _canReturnToGame;
     private string _statusText = "";
     private string _lobbyName = "";
     private string _lastDefaultLobbyName = "";
+    private bool _directHost;
 
     public event Action<HostConfig> OnHostRequested;
     public event Action<string> OnJoinByCodeRequested;
@@ -80,14 +87,17 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
     public event Action<ulong> OnJoinByLobbyIdRequested;
     public event Action OnDisconnectRequested;
     public event Action OnStartRequested;
+    public event Action OnReturnToGameRequested;
+    public event Action<DirectConnectConfig> OnJoinDirectRequested;
     public event Action OnPanelClosed;
 
     public bool IsVisible => _visible;
 
-    public UiToolkitMultiplayerPanel(SteamLobbyManager lobby, Func<ClimbWorld, string> whyUnavailable)
+    public UiToolkitMultiplayerPanel(IMultiplayerSession session, Func<ClimbWorld, string> whyUnavailable)
     {
-        _lobby = lobby ?? throw new ArgumentNullException(nameof(lobby));
+        _session = session ?? throw new ArgumentNullException(nameof(session));
         _whyUnavailable = whyUnavailable ?? throw new ArgumentNullException(nameof(whyUnavailable));
+        _directHost = ModConfig.DirectHost?.Value ?? false;
     }
 
     public void Show()
@@ -149,13 +159,24 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
         _lobbyName = name ?? "";
     }
 
+    public void SetSession(IMultiplayerSession session)
+    {
+        if (session != null) _session = session;
+    }
+
+    public void SetCanReturnToGame(bool canReturn)
+    {
+        _canReturnToGame = canReturn;
+        if (_session != null && _connectedScreen != null) RefreshConnected(_session, GetLocalPlayerName());
+    }
+
     public void Tick(float dt)
     {
         if (!_visible) return;
         EnsureControllerFocus();
         UpdateSteamProfile();
         if (_currentScreen == Screen.Connected)
-            RefreshConnected(_lobby, GetLocalPlayerName());
+            RefreshConnected(_session, GetLocalPlayerName());
     }
 
     public void OnGUI()
@@ -169,7 +190,7 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
         VisualElement target = _currentScreen switch
         {
             Screen.Browser => _refreshButton,
-            Screen.Connected => _startButton ?? _copyButton,
+            Screen.Connected => _canReturnToGame ? _returnButton : _startButton ?? _copyButton,
             _ => _createButton,
         };
         target?.Focus();
@@ -194,6 +215,9 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
         _steamNameLabel = null;
         _lobbyNameField = null;
         _codeField = null;
+        _addressField = null;
+        _hostPortField = null;
+        _joinPortField = null;
         _homeModeSegment = null;
         _hostPane = null;
         _joinPane = null;
@@ -212,6 +236,10 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
         _lobbyWorldIssue = null;
         _connectedMode = null;
         _visibilitySegment = null;
+        _visibilityColumn = null;
+        _portColumn = null;
+        _connectionSegment = null;
+        _directJoinButton = null;
         _lobbyList = null;
         _browserEmptyLabel = null;
         _connectedLobbyTitle = null;
@@ -220,6 +248,7 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
         _connectedCount = null;
         _copyButton = null;
         _startButton = null;
+        _returnButton = null;
         _startHint = null;
     }
 
@@ -434,8 +463,31 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
         _visibilitySegment = new SegmentControl(new[] { "Public", "Friends", "Private" }, 0);
         visibilityCol.Add(_visibilitySegment.Root);
         configRow.Add(visibilityCol);
+        _visibilityColumn = visibilityCol;
 
-        var saveNote = CairnUi.Label("When the host starts, everyone picks their own save, or Summit run, in Cairn's menu.",
+        var connectionRow = CairnUi.Row();
+        connectionRow.style.marginTop = 8;
+        card.Add(connectionRow);
+
+        var connectionCol = Column();
+        connectionCol.style.flexGrow = 1;
+        connectionCol.Add(CairnUi.MicroLabel("CONNECTION"));
+        _connectionSegment = new SegmentControl(new[] { "Steam", "Direct IP" }, _directHost ? 1 : 0);
+        _connectionSegment.Changed += _ => RefreshHostConnection();
+        connectionCol.Add(_connectionSegment.Root);
+        connectionRow.Add(connectionCol);
+
+        var portCol = Column();
+        portCol.style.flexBasis = 140;
+        portCol.Add(CairnUi.MicroLabel("PORT"));
+        _hostPortField = CairnUi.TextField(Protocol.DefaultPort.ToString(), 5);
+        _hostPortField.value = ParsePort(ModConfig.DirectPort?.Value.ToString()).ToString();
+        portCol.Add(_hostPortField);
+        connectionRow.Add(portCol);
+        _portColumn = portCol;
+
+        var saveNote = CairnUi.Label(
+            "When the host starts, everyone picks their own save, or Summit run, in Cairn's menu.",
             11, CairnUi.TextMuted, FontStyle.Italic);
         saveNote.style.marginTop = 8;
         saveNote.style.marginBottom = 12;
@@ -445,6 +497,7 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
         _createButton.style.marginTop = 4;
         card.Add(_createButton);
         RefreshDestination();
+        RefreshHostConnection();
     }
 
     /// <summary>Asks the game whether this player could launch the chosen destination, and
@@ -486,6 +539,29 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
         _joinButton.style.width = 150;
         _joinButton.style.height = 38;
         row.Add(_joinButton);
+
+        card.Add(CairnUi.MicroLabel("DIRECT IP - Radmin VPN or LAN"));
+
+        var directRow = CairnUi.Row(0);
+        directRow.style.marginBottom = 0;
+        card.Add(directRow);
+
+        _addressField = CairnUi.TextField("10.0.0.1", 32);
+        _addressField.value = ModConfig.DirectAddress?.Value ?? "";
+        _addressField.style.flexGrow = 1;
+        _addressField.style.marginRight = 10;
+        directRow.Add(_addressField);
+
+        _joinPortField = CairnUi.TextField(Protocol.DefaultPort.ToString(), 5);
+        _joinPortField.value = ParsePort(ModConfig.DirectPort?.Value.ToString()).ToString();
+        _joinPortField.style.width = 90;
+        _joinPortField.style.marginRight = 10;
+        directRow.Add(_joinPortField);
+
+        _directJoinButton = CairnUi.Button("JOIN BY IP", OnJoinDirectClicked);
+        _directJoinButton.style.width = 130;
+        _directJoinButton.style.height = 38;
+        directRow.Add(_directJoinButton);
     }
 
     private void BuildBrowseCard()
@@ -620,6 +696,10 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
         _startButton.style.marginTop = 16;
         _connectedScreen.Add(_startButton);
 
+        _returnButton = CairnUi.Button("RETURN TO CLIMB", () => OnReturnToGameRequested?.Invoke(), primary: true);
+        _returnButton.style.marginTop = 16;
+        _connectedScreen.Add(_returnButton);
+
         _startHint = CairnUi.Label("Waiting for host to start", 12, CairnUi.TextMuted, FontStyle.Italic);
         _startHint.style.height = 40;
         _startHint.style.marginTop = 16;
@@ -731,7 +811,7 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
 
     private string GetLocalPlayerName()
     {
-        var name = _lobby.LocalPersonaName;
+        var name = _session.LocalPersonaName;
         if (!string.IsNullOrWhiteSpace(name))
             return name.Trim();
 
@@ -775,6 +855,29 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
         return index >= 0 && index < modes.Count ? modes[index] : modes[0];
     }
 
+    private void RefreshHostConnection()
+    {
+        _directHost = _connectionSegment?.SelectedIndex == 1;
+        if (_visibilityColumn != null) CairnUi.Show(_visibilityColumn, !_directHost);
+        if (_portColumn != null) CairnUi.Show(_portColumn, _directHost);
+    }
+
+    private static int ParsePort(string value)
+        => int.TryParse(value, out var port) && port >= 1024 && port <= 65535 ? port : Protocol.DefaultPort;
+
+    private void OnJoinDirectClicked()
+    {
+        if (_isConnecting || _isConnected) return;
+        var address = _addressField?.value?.Trim() ?? "";
+        if (string.IsNullOrEmpty(address)) return;
+
+        OnJoinDirectRequested?.Invoke(new DirectConnectConfig
+        {
+            Address = address,
+            Port = ParsePort(_joinPortField?.value),
+        });
+    }
+
     private void OnCreateClicked()
     {
         if (_isConnecting || _worldIssue != null) return;
@@ -798,6 +901,8 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
             Visibility = visibility,
             Mode = SelectedMode().Mode,
             World = SelectedWorld(),
+            Direct = _directHost,
+            Port = ParsePort(_hostPortField?.value),
         });
     }
 
@@ -828,7 +933,7 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
 
     private void OnCopyClicked()
     {
-        var code = _lobby.CurrentRoomCode;
+        var code = _session.CurrentRoomCode;
         if (string.IsNullOrEmpty(code)) return;
 
         try
@@ -874,18 +979,18 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
         }
     }
 
-    private void RefreshConnected(SteamLobbyManager lobby, string localPlayerName)
+    private void RefreshConnected(IMultiplayerSession session, string localPlayerName)
     {
-        if (lobby == null) return;
+        if (session == null) return;
 
         _connectedLobbyTitle.text = string.IsNullOrWhiteSpace(_lobbyName) ? "Lobby" : _lobbyName;
-        _connectedCode.text = string.IsNullOrWhiteSpace(lobby.CurrentRoomCode) ? "----" : lobby.CurrentRoomCode;
-        var world = lobby.CurrentWorld;
-        if (_connectedMode != null) _connectedMode.text = DescribeMode(lobby.CurrentModeRules, world);
+        _connectedCode.text = string.IsNullOrWhiteSpace(session.CurrentRoomCode) ? "----" : session.CurrentRoomCode;
+        var world = session.CurrentWorld;
+        if (_connectedMode != null) _connectedMode.text = DescribeMode(session.CurrentModeRules, world);
 
         var sb = new StringBuilder();
         var count = 0;
-        foreach (var member in lobby.Members)
+        foreach (var member in session.Members)
         {
             if (count > 0) sb.Append('\n');
             var displayName = string.IsNullOrWhiteSpace(member.Name)
@@ -909,11 +1014,12 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
         }
 
         _connectedPlayers.text = sb.ToString();
-        _connectedCount.text = lobby.MaxMembers > 0 ? $"{count} / {lobby.MaxMembers}" : count.ToString();
+        _connectedCount.text = session.MaxMembers > 0 ? $"{count} / {session.MaxMembers}" : count.ToString();
 
-        var isHost = lobby.IsHost;
-        CairnUi.Show(_startButton, isHost);
-        CairnUi.Show(_startHint, !isHost);
+        var isHost = session.IsHost;
+        CairnUi.Show(_startButton, isHost && !_canReturnToGame);
+        CairnUi.Show(_returnButton, _canReturnToGame);
+        CairnUi.Show(_startHint, !isHost && !_canReturnToGame);
         if (_lobbyWorldChecked != world)
         {
             _lobbyWorldChecked = world;
@@ -931,16 +1037,21 @@ internal sealed partial class UiToolkitMultiplayerPanel : IMultiplayerPanel
         var enabled = !_isConnecting && !_isConnected;
         _lobbyNameField?.SetEnabled(enabled);
         _codeField?.SetEnabled(enabled);
+        _addressField?.SetEnabled(enabled);
+        _hostPortField?.SetEnabled(enabled);
+        _joinPortField?.SetEnabled(enabled);
+        _connectionSegment?.SetEnabled(enabled);
         _slotsStepper?.SetEnabled(enabled);
         _modeSegment?.SetEnabled(enabled);
         _visibilitySegment?.SetEnabled(enabled);
         _joinButton?.SetEnabled(enabled);
+        _directJoinButton?.SetEnabled(enabled);
         _browseButton?.SetEnabled(enabled);
         _worldSegment?.SetEnabled(enabled);
         _createButton?.SetEnabled(enabled && _worldIssue == null);
 
         if (_createButton != null)
-            _createButton.text = _isConnecting ? "CONNECTING..." : "CREATE LOBBY";
+            _createButton.text = _isConnecting ? "CONNECTING..." : _directHost ? "HOST BY IP" : "CREATE LOBBY";
         if (_joinButton != null)
             _joinButton.text = _isConnecting ? "CONNECTING..." : "JOIN";
     }

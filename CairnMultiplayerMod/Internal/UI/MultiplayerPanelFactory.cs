@@ -11,20 +11,20 @@ internal static class MultiplayerPanelFactory
 {
     /// <param name="whyUnavailable">Why this player's game cannot open a destination, or null
     /// when it can. Asked of the game by the caller: the panels only put the answer on screen.</param>
-    public static IMultiplayerPanel Create(SteamLobbyManager lobby, Func<ClimbWorld, string> whyUnavailable)
+    public static IMultiplayerPanel Create(IMultiplayerSession session, Func<ClimbWorld, string> whyUnavailable)
     {
-        if (lobby == null) throw new ArgumentNullException(nameof(lobby));
+        if (session == null) throw new ArgumentNullException(nameof(session));
         if (whyUnavailable == null) throw new ArgumentNullException(nameof(whyUnavailable));
         try
         {
-            var panel = new SketchMultiplayerPanel(lobby, whyUnavailable);
+            var panel = new SketchMultiplayerPanel(session, whyUnavailable);
             ModLog.Info("[CairnMP] Sketch (native-style) multiplayer panel enabled with UI Toolkit fallback.");
-            return new ResilientMultiplayerPanel(panel, () => new UiToolkitMultiplayerPanel(lobby, whyUnavailable));
+            return new ResilientMultiplayerPanel(panel, () => new UiToolkitMultiplayerPanel(session, whyUnavailable));
         }
         catch (Exception ex)
         {
             ModLog.Warning($"[CairnMP] Sketch panel unavailable, using UI Toolkit: {ex.Message}");
-            return new UiToolkitMultiplayerPanel(lobby, whyUnavailable);
+            return new UiToolkitMultiplayerPanel(session, whyUnavailable);
         }
     }
 }

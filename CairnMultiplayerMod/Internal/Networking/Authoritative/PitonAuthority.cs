@@ -91,6 +91,12 @@ internal sealed class PitonAuthority
             _sink.SendTo(playerId, PacketId.ServerPitonPlaced, pkt, NetReliability.ReliableOrdered);
     }
 
+    public void BroadcastSnapshot()
+    {
+        foreach (var pkt in _pitons.Values)
+            _sink.Broadcast(PacketId.ServerPitonPlaced, pkt, 0, NetReliability.ReliableOrdered);
+    }
+
 
     public void HandleHostPitonPlaced(int hostPlayerId, ClientPitonPlaced packet)
     {

@@ -164,11 +164,12 @@ public partial class Mod : MelonMod
             new WeatherAdapter(),
             new WorldAdapter(), _voice, new LifeAdapter(), new SpectatorAdapter());
 
-        Rope = new RopeCoupleController(Network, _runtimeState);
+        Rope = new RopeCoupleController(Network, _runtimeState,
+            () => StartGame != null && StartGame.HasLastStartGame);
         Player = new PlayerStateBroadcaster(
             Network, _runtimeState, Rope.Reset, () => Bivouac?.BlocksGameplaySync() == true,
             isSpeaking: playerId => _voice?.IsSpeaking(playerId) == true);
-        StartGame = new StartGameFlow(_panel, _mainMenu.RestoreMainMenuInput, _runtimeState);
+        StartGame = new StartGameFlow(_panel, _mainMenu.PrepareNativeMenuForLaunch, _runtimeState);
         Bivouac = new BivouacSyncGate(
             Network, _panel, _runtimeState, ResetSyncTimers, ResetSceneBoundSyncState, SetLocalState);
     }
@@ -188,6 +189,7 @@ public partial class Mod : MelonMod
             _panel.SetCurrentLobbyName(Lobby.CurrentLobbyName);
             _panel.SetStatus(string.IsNullOrEmpty(code) ? "Connected" : $"Connected — code {code}", true);
             Network.StartSteamTransport(Lobby);
+            _panel.SetSession(Network.CurrentSession);
         };
         Lobby.OnLobbyError += err =>
         {
@@ -221,7 +223,7 @@ public partial class Mod : MelonMod
             Network.RefreshSteamLobbyMembers(Lobby);
             _panel.SetStatus($"{Lobby.Members.Count} player(s) in lobby", true);
         };
-        Lobby.OnStartRequested += StartGame.Begin;
+        Lobby.OnStartRequested += StartGame.JoinCurrentRun;
     }
 
     private void WirePanelEvents()
@@ -236,28 +238,42 @@ public partial class Mod : MelonMod
         _panel.OnJoinByLobbyIdRequested += OnJoinByLobbyIdRequested;
         _panel.OnDisconnectRequested += OnDisconnectRequested;
         _panel.OnStartRequested += OnStartRequested;
+        _panel.OnReturnToGameRequested += OnReturnToGameRequested;
+        _panel.OnJoinDirectRequested += OnJoinDirectRequested;
         _panel.OnPanelClosed += _mainMenu.RestoreNativeMenu;
     }
 
     private void WireNetworkEvents()
     {
+        Network.OnDirectSessionInfo += packet =>
+        {
+            _runtimeState.ModeRules = MultiplayerModes.Parse(packet.Mode);
+            _panel.SetCurrentLobbyName(packet.ServerName);
+        };
         Network.OnHandshakeAck += () =>
         {
+            _connectingStart = null;
             _panel.SetStatus($"Connected to {Network.ServerName} (id={Network.LocalPlayerId})", true);
             SetMultiplayerModeActive(true);
         };
         Network.OnFeatureStream += (fromPlayerId, channel, payload) =>
             Features.DispatchStream(fromPlayerId, channel, payload);
         Network.OnHandshakeRejected += reason =>
+        {
+            _connectingStart = null;
             _panel.SetStatus($"Rejected: {reason}", false);
+        };
         Network.OnDisconnected += _ =>
         {
+            _connectingStart = null;
             SetMultiplayerModeActive(false);
             StartGame.Cancel();
             RopeInterop.ClearRemotePitons();
             WeatherInterop.ResetRemoteState();
             Rope.ClearLinks();
             Bivouac.ForceResume();
+            _runtimeState.ModeRules = MultiplayerModes.RopeTeam;
+            _panel.SetStatus("Disconnected", false);
         };
         Network.OnPlayerJoined += (id, name) =>
         {
@@ -299,6 +315,6 @@ public partial class Mod : MelonMod
         };
         // Authoritative game launch by the server: queues the packet, applies it in
         // Update when the MainMenu scene is active.
-        Network.OnStartGameReceived += pkt => StartGame.Begin(pkt);
+        Network.OnStartGameReceived += pkt => StartGame.JoinCurrentRun(pkt);
     }
 }

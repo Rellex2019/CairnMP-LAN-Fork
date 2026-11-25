@@ -16,9 +16,14 @@ internal sealed partial class NetworkManager
         }
 
         var id = (PacketId)payload[0];
-        if (IsSteamTransportActive && !IsHandshakeComplete
+        if (IsTransportActive && !IsHandshakeComplete
             && id != PacketId.ServerExtensionManifestResult
-            && id != PacketId.ServerHandshakeReject)
+            && id != PacketId.ServerHandshakeReject
+            && id != PacketId.ServerCurrentRun
+            && id != PacketId.ServerStartGame
+            && id != PacketId.ServerDirectSessionInfo
+            && id != PacketId.ServerPlayerJoined
+            && id != PacketId.ServerPlayerLeft)
         {
             return;
         }
@@ -46,6 +51,9 @@ internal sealed partial class NetworkManager
             case PacketId.ServerHandshakeAck:
                 HandleHandshakeAck(reader);
                 break;
+            case PacketId.ServerDirectSessionInfo:
+                HandleDirectSessionInfo(reader);
+                break;
             case PacketId.ServerHandshakeReject:
                 HandleHandshakeReject(reader);
                 break;
@@ -60,6 +68,9 @@ internal sealed partial class NetworkManager
                 break;
             case PacketId.ServerStartGame:
                 HandleStartGame(reader);
+                break;
+            case PacketId.ServerCurrentRun:
+                HandleCurrentRun(reader);
                 break;
             case PacketId.ServerBoneState:
                 HandleBoneState(reader);

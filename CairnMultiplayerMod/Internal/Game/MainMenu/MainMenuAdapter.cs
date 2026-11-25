@@ -126,11 +126,16 @@ internal sealed class MainMenuAdapter : IMainMenuApi, IDisposable
 
     internal void RestoreNativeMenu()
     {
-        InputInterop.RestoreMainMenuActionMaps();
-        RestoreMainMenuInput();
+        PrepareNativeMenuForLaunch();
         if (_modeSelectContainer != null) _modeSelectContainer.SetActive(true);
         if (_suspendedArrow != null) _suspendedArrow.SetActive(_suspendedArrowWasActive);
         _suspendedArrow = null;
+    }
+
+    internal void PrepareNativeMenuForLaunch()
+    {
+        InputInterop.RestoreMainMenuActionMaps();
+        RestoreMainMenuInput();
     }
 
     internal void RestoreMainMenuInput()

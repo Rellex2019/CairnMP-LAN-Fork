@@ -18,6 +18,7 @@ internal sealed partial class NetworkManager
     {
         var packet = new ServerPlayerState();
         packet.Deserialize(reader);
+        if (packet.PlayerId == LocalPlayerId) return;
         if (!PacketValidation.IsValidPose(packet.X, packet.Y, packet.Z, packet.YawDeg)) return;
 
         if (!_remotePlayers.TryGetValue(packet.PlayerId, out var player))

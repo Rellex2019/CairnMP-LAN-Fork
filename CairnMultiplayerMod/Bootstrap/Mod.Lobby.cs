@@ -21,19 +21,20 @@ public partial class Mod
             _panel.SetStatus("Launch already in progress.", true);
             return;
         }
-        if (!Lobby.IsInLobby)
+        var session = Network.CurrentSession;
+        if (!Network.IsConnected || session == null)
         {
             _panel.SetStatus("Not connected to a lobby.", false);
             return;
         }
-        if (!Lobby.IsHost)
+        if (!session.IsHost)
         {
             _panel.SetStatus("Only the host can start.", true);
             return;
         }
 
-        var rules = Lobby.CurrentModeRules;
-        var world = Lobby.CurrentWorld;
+        var rules = session.CurrentModeRules;
+        var world = session.CurrentWorld;
         // The host's own launch would fail after everyone else's had begun.
         var blocked = SummitWorldInterop.WhyUnavailable(world);
         if (blocked != null)
@@ -43,7 +44,20 @@ public partial class Mod
         }
 
         _panel.SetStatus($"Starting {rules.Name} on {ClimbWorlds.Name(world)}...", true);
-        Lobby.BroadcastStart(BuildStartGame(rules, world));
+        var start = BuildStartGame(rules, world);
+        Network.BroadcastStartGame(start);
+        if (Network.IsDirectTransport) StartGame.JoinCurrentRun(start);
+    }
+
+    private void OnReturnToGameRequested()
+    {
+        if (!Network.IsConnected || Network.CurrentSession == null || !StartGame.HasLastStartGame)
+        {
+            _panel.SetStatus("There is no climb to return to.", Network.IsConnected);
+            return;
+        }
+
+        StartGame.Begin(StartGame.LastStartGame.Value);
     }
 
     /// <summary>The mode decides the difficulty and the lobby the destination; the rest are
@@ -61,8 +75,17 @@ public partial class Mod
 
     private void OnHostRequested(HostConfig config)
     {
+        if (config == null) return;
+        if (config.Direct)
+        {
+            OnDirectHostRequested(config);
+            return;
+        }
+
+        ModConfig.DirectHost.Value = false;
         config = WithLocalSteamIdentity(config);
         LoggerInstance.Msg($"Creating Steam lobby '{config.LobbyName}' as '{config.PlayerName}' " +
+
                            $"(max {config.MaxPlayers}, {config.Visibility}, {config.Mode}, {config.World})...");
         ModConfig.PlayerName.Value = config.PlayerName;
         ModConfig.MaxPlayers.Value = config.MaxPlayers;
@@ -78,6 +101,68 @@ public partial class Mod
         catch (Exception exception)
         {
             ReportLobbyException("CreateLobby", exception);
+        }
+    }
+
+    private void OnDirectHostRequested(HostConfig config)
+    {
+        var playerName = GetSteamPlayerName();
+        LoggerInstance.Msg($"Hosting direct climb '{config.LobbyName}' on port {config.Port} as '{playerName}' " +
+                           $"({MultiplayerModes.RulesFor(config.Mode).Name}, {ClimbWorlds.Name(config.World)})...");
+        ModConfig.PlayerName.Value = playerName;
+        ModConfig.MaxPlayers.Value = config.MaxPlayers;
+        ModConfig.DirectHost.Value = true;
+        ModConfig.DirectPort.Value = config.Port;
+        MelonPreferences.Save();
+
+        _panel.SetCurrentLobbyName(config.LobbyName);
+        BeginConnecting($"Hosting on port {config.Port}");
+
+        try
+        {
+            Lobby.Leave();
+            Network.Disconnect();
+            var session = new DirectHostSession(config, playerName);
+            session.Start();
+            Network.StartDirectTransport(session);
+            session.PublishWorldAvailability(SummitWorldInterop.WhyUnavailable(config.World) == null);
+            _runtimeState.ModeRules = session.CurrentModeRules;
+            _panel.SetSession(Network.CurrentSession);
+            _panel.SetStatus(string.IsNullOrWhiteSpace(session.CurrentRoomCode)
+                ? "Hosting — share your IP and port"
+                : $"Hosting — {session.CurrentRoomCode}", true);
+        }
+        catch (Exception exception)
+        {
+            ReportLobbyException("HostDirect", exception);
+        }
+    }
+
+    private void OnJoinDirectRequested(DirectConnectConfig config)
+    {
+        if (config == null) return;
+        var playerName = GetSteamPlayerName();
+        LoggerInstance.Msg($"Joining direct climb at {config.Address}:{config.Port} as '{playerName}'...");
+        ModConfig.PlayerName.Value = playerName;
+        ModConfig.DirectAddress.Value = config.Address;
+        ModConfig.DirectPort.Value = config.Port;
+        MelonPreferences.Save();
+
+        BeginConnecting($"Joining {config.Address}:{config.Port}");
+
+        try
+        {
+            Lobby.Leave();
+            Network.Disconnect();
+            var session = new DirectClientSession(config, playerName, worldUnavailable: false);
+            session.Connect();
+            Network.StartDirectTransport(session);
+            _panel.SetSession(Network.CurrentSession);
+            _panel.SetStatus($"Connected — {config.Address}:{config.Port}", true);
+        }
+        catch (Exception exception)
+        {
+            ReportLobbyException("JoinDirect", exception);
         }
     }
 
@@ -124,6 +209,8 @@ public partial class Mod
         Visibility = config.Visibility,
         Mode = config.Mode,
         World = config.World,
+        Direct = config.Direct,
+        Port = config.Port,
     };
 
     private Task<List<LobbyEntry>> _browserRequest;

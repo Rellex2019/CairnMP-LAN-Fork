@@ -23,7 +23,7 @@ internal sealed partial class NetworkManager
         _extensionBridge = new ExtensionNetworkBridge(this);
         MultiplayerApi.Runtime.Attach(_extensionBridge);
 
-        if (_steamLobby?.IsHost == true)
+        if (_session?.IsHost == true)
         {
             _enabledExtensionsByPlayer[LocalPlayerId] = MultiplayerApi.Runtime.Manifest()
                 .Select(entry => entry.Id).ToHashSet(StringComparer.Ordinal);
@@ -31,7 +31,7 @@ internal sealed partial class NetworkManager
             return;
         }
 
-        SendSteamPacketToHost(PacketId.ClientExtensionManifest, new ClientExtensionManifest
+        SendPacketToHost(PacketId.ClientExtensionManifest, new ClientExtensionManifest
         {
             Entries = MultiplayerApi.Runtime.Manifest(),
         }, reliable: true);
@@ -39,7 +39,7 @@ internal sealed partial class NetworkManager
 
     private bool HandleExtensionHostPacket(ulong remoteSteamId, PacketId id, System.IO.BinaryReader reader)
     {
-        int playerId = EnsureSteamRemotePlayer(remoteSteamId);
+        int playerId = EnsureRemotePlayer(remoteSteamId);
         if (id == PacketId.ClientExtensionManifest)
         {
             HandleClientExtensionManifest(remoteSteamId, playerId, reader);
@@ -68,7 +68,7 @@ internal sealed partial class NetworkManager
         manifest.Deserialize(reader);
         var result = ExtensionNegotiator.Negotiate(MultiplayerApi.Runtime.Manifest(), manifest.Entries);
         var enabled = result.EnabledExtensionIds.ToArray();
-        SendSteamPayload(new Il2CppSteamworks.CSteamID(remoteSteamId),
+        SendPayload(remoteSteamId,
             BuildPayload(PacketId.ServerExtensionManifestResult, new ServerExtensionManifestResult
             {
                 Accepted = result.Accepted,
@@ -88,8 +88,9 @@ internal sealed partial class NetworkManager
         SendPeerStatusesTo(playerId);
         if (!wasAdmitted)
             BroadcastPeerStatus(playerId, joined: true);
-        SendSteamSnapshotTo(remoteSteamId);
+        SendSnapshotTo(remoteSteamId);
         SendExtensionSnapshotTo(playerId);
+        SendCurrentRunTo(playerId);
         if (!wasAdmitted)
             MultiplayerApi.Runtime.NotifyPlayerJoined(ToApiPlayer(playerId));
         ModLog.Info($"[Extensions] Player {playerId} admitted with {enabled.Length} extension(s).");
@@ -108,8 +109,8 @@ internal sealed partial class NetworkManager
         });
     }
 
-    private bool IsExtensionPeerAdmitted(ulong remoteSteamId)
-        => _enabledExtensionsByPlayer.ContainsKey(StableSteamPlayerId(remoteSteamId));
+    private bool IsExtensionPeerAdmitted(ulong remotePeerId)
+        => _enabledExtensionsByPlayer.ContainsKey(StablePeerPlayerId(remotePeerId));
 
     private void HandleExtensionManifestResult(System.IO.BinaryReader reader)
     {
@@ -122,13 +123,14 @@ internal sealed partial class NetworkManager
             LastError = result.Reason;
             OnHandshakeRejected?.Invoke(result.Reason);
             ModLog.Warning($"[Extensions] Host rejected this client: {result.Reason}");
-            _steamLobby?.Leave();
+            if (_session is SteamTransportSession) _steamLobby?.Leave();
+            else _session?.Dispose();
             return;
         }
 
         var enabled = (result.EnabledExtensionIds ?? Array.Empty<string>()).ToHashSet(StringComparer.Ordinal);
         _enabledExtensionsByPlayer[LocalPlayerId] = enabled;
-        _enabledExtensionsByPlayer[StableSteamPlayerId(_steamHostId)] = new HashSet<string>(enabled, StringComparer.Ordinal);
+        _enabledExtensionsByPlayer[StablePeerPlayerId(HostPeerId)] = new HashSet<string>(enabled, StringComparer.Ordinal);
         IsHandshakeComplete = true;
         MultiplayerApi.Runtime.NotifySessionReady();
         OnHandshakeAck?.Invoke();
@@ -214,13 +216,20 @@ internal sealed partial class NetworkManager
                 SteamSink.SendTo(playerId, PacketId.ServerExtensionState, state, NetReliability.ReliableOrdered);
     }
 
+    private void SendCurrentRunTo(int playerId)
+    {
+        if (_session?.IsHost != true || !_currentRun.HasValue) return;
+        SteamSink.SendTo(playerId, PacketId.ServerCurrentRun, _currentRun.Value,
+            NetReliability.ReliableOrdered);
+    }
+
     private void NotifyExtensionPeerLeft(int playerId)
     {
         if (!_enabledExtensionsByPlayer.ContainsKey(playerId)) return;
         var player = ToApiPlayer(playerId);
         // Peer status is the host's to announce. A client noticing the leave itself used to
         // send this Server* packet to everyone, who dropped it as non-host traffic.
-        if (_steamLobby != null && _steamLobby.IsHost)
+        if (_session?.IsHost == true)
             BroadcastPeerStatus(playerId, joined: false);
         _enabledExtensionsByPlayer.Remove(playerId);
         MultiplayerApi.Runtime.NotifyPlayerLeft(player);
@@ -237,10 +246,10 @@ internal sealed partial class NetworkManager
     private MultiplayerPlayer ToApiPlayer(int playerId)
     {
         bool isLocal = playerId == LocalPlayerId;
-        bool isHost = playerId == StableSteamPlayerId(_steamHostId);
+        bool isHost = playerId == StablePeerPlayerId(HostPeerId);
         string name;
         if (isLocal)
-            name = _steamLobby?.LocalPersonaName ?? "Player";
+            name = _session?.LocalPersonaName ?? "Player";
         else if (_remotePlayers.TryGetValue(playerId, out var remote))
             name = remote.Name ?? $"Player{playerId}";
         else
@@ -253,8 +262,8 @@ internal sealed partial class NetworkManager
         private readonly NetworkManager _network;
         internal ExtensionNetworkBridge(NetworkManager network) => _network = network;
 
-        public bool IsConnected => _network._steamTransportActive;
-        public bool IsHost => _network._steamLobby?.IsHost == true;
+        public bool IsConnected => _network.IsTransportActive;
+        public bool IsHost => _network._session?.IsHost == true;
         public int LocalPlayerId => _network.LocalPlayerId;
         public MultiplayerPlayer LocalPlayer => _network.ToApiPlayer(_network.LocalPlayerId);
         public IReadOnlyList<MultiplayerPlayer> Players
@@ -274,7 +283,7 @@ internal sealed partial class NetworkManager
                enabled.Contains(extensionId);
 
         public void SendCommand(ClientExtensionCommand command)
-            => _network.SendSteamPacketToHost(PacketId.ClientExtensionCommand, command, reliable: true);
+            => _network.SendPacketToHost(PacketId.ClientExtensionCommand, command, reliable: true);
 
         public void SendCommandResult(int targetPlayerId, ServerExtensionCommandResult result)
             => _network.SteamSink.SendTo(targetPlayerId, PacketId.ServerExtensionCommandResult,

@@ -11,7 +11,9 @@ namespace CairnMultiplayerMod.Internal.Networking
     /// </summary>
     internal sealed partial class NetworkManager : IDisposable
     {
-        public bool IsConnected => IsSteamTransportActive;
+        public bool IsConnected => IsTransportActive;
+        public bool IsDirectTransport => _session is DirectTransportSession;
+        public IMultiplayerSession CurrentSession => (IMultiplayerSession)_session ?? _steamLobby;
         public bool IsHandshakeComplete { get; private set; }
         public int LocalPlayerId { get; private set; }
         public string ServerName { get; private set; }
@@ -23,6 +25,7 @@ namespace CairnMultiplayerMod.Internal.Networking
 
         private readonly Dictionary<int, RemotePlayer> _remotePlayers = new();
         private readonly Func<IEnumerable<(int a, int b)>> _ropeLinks;
+        private ServerStartGame? _currentRun;
         public IReadOnlyDictionary<int, RemotePlayer> RemotePlayers => _remotePlayers;
 
         internal NetworkManager(Func<IEnumerable<(int a, int b)>> ropeLinks)
@@ -39,6 +42,7 @@ namespace CairnMultiplayerMod.Internal.Networking
         public event Action<int, int, bool> OnRopeClip;
         public event Action OnHandshakeAck;
         public event Action<string> OnHandshakeRejected;
+        public event Action<ServerDirectSessionInfo> OnDirectSessionInfo;
         public event Action<ServerStartGame> OnStartGameReceived;
         public event Action<ServerPitonPlaced> OnPitonPlaced;
         public event Action<ServerPitonRemoved> OnPitonRemoved;
@@ -52,10 +56,7 @@ namespace CairnMultiplayerMod.Internal.Networking
 
         public void Disconnect()
         {
-            var wasConnected = IsSteamTransportActive;
-            if (wasConnected)
-                StopSteamTransport();
-
+            var wasConnected = IsTransportActive;
             Reset();
 
             if (wasConnected)
@@ -64,14 +65,14 @@ namespace CairnMultiplayerMod.Internal.Networking
 
         public void Update()
         {
-            PumpSteamTransport();
+            PumpTransport();
             CairnMultiplayer.Api.MultiplayerApi.Runtime.Tick();
         }
 
 
         public void SendPlayerState(float x, float y, float z, float yaw, string sceneName, PlayerState state)
         {
-            if (IsSteamTransportActive)
+            if (IsTransportActive)
                 SendSteamPlayerState(x, y, z, yaw, sceneName, state);
         }
 
@@ -83,7 +84,7 @@ namespace CairnMultiplayerMod.Internal.Networking
                 ModLog.Debug($"[NetSync] First local player NetFrame sent positions={FrameVectorCount(frame.Positions)} eulers={FrameVectorCount(frame.Eulers)} flags=0x{frame.Flags:X2}");
             }
 
-            if (IsSteamTransportActive)
+            if (IsTransportActive)
                 SendSteamPlayerFrame(frame);
         }
 
@@ -95,7 +96,7 @@ namespace CairnMultiplayerMod.Internal.Networking
                 ModLog.Debug($"[NetSync] First local climbot NetFrame sent positions={FrameVectorCount(frame.Positions)} eulers={FrameVectorCount(frame.Eulers)} flags=0x{frame.Flags:X2}");
             }
 
-            if (IsSteamTransportActive)
+            if (IsTransportActive)
                 SendSteamClimbotFrame(frame);
         }
 
@@ -127,20 +128,20 @@ namespace CairnMultiplayerMod.Internal.Networking
 
         public void SendPitonPlaced(ClientPitonPlaced piton)
         {
-            if (IsSteamTransportActive)
+            if (IsTransportActive)
                 SendSteamPitonPlaced(piton);
         }
 
         public void SendPitonRemoved(uint pitonId)
         {
-            if (IsSteamTransportActive)
+            if (IsTransportActive)
                 SendSteamPitonRemoved(pitonId);
         }
 
         /// <summary>Reports taking up someone else's piton, by the host's id for it.</summary>
         public void SendPitonRecovered(uint pitonId)
         {
-            if (IsSteamTransportActive)
+            if (IsTransportActive)
                 SendSteamPitonRecovered(pitonId);
         }
 
@@ -151,30 +152,46 @@ namespace CairnMultiplayerMod.Internal.Networking
         /// </summary>
         public void SendFeatureStream(ushort channel, byte[] payload, bool reliable)
         {
-            if (IsSteamTransportActive)
+            if (IsTransportActive)
                 SendSteamFeatureStream(channel, payload, reliable);
         }
 
         public void SendRopeClip(int targetPlayerId, bool clip)
         {
-            if (IsSteamTransportActive)
+            if (IsTransportActive)
                 SendSteamRopeClip(targetPlayerId, clip);
         }
 
 
+        internal void BroadcastStartGame(ServerStartGame start)
+        {
+            if (!IsTransportActive) return;
+            _currentRun = start;
+            _session?.BroadcastStart(start);
+        }
+
+        internal void ReplayPitons()
+        {
+            if (IsTransportActive && _session?.IsHost == true)
+                Pitons.BroadcastSnapshot();
+        }
+
         private void Reset()
         {
+            StopTransport();
             IsHandshakeComplete = false;
             LocalPlayerId = 0;
             ServerName = null;
+            CurrentLobbyId = null;
+            CurrentRoomCode = null;
             LastError = null;
+            _currentRun = null;
             _remotePlayers.Clear();
             _debugLoggedFirstLocalPlayerFrameSend = false;
             _debugLoggedFirstLocalClimbotFrameSend = false;
             _debugLoggedFirstRemotePlayerFrame.Clear();
             _debugLoggedFirstRemoteClimbotFrame.Clear();
             _debugRejectedFrameLogTimes.Clear();
-            ResetSteamTransportState();
         }
 
         public void Dispose() => Disconnect();

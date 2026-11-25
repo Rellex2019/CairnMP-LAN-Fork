@@ -17,10 +17,11 @@ internal sealed class StartGameFlow
     private const float SummitMenuWaitSeconds = 5f;
 
     private readonly IMultiplayerPanel _panel;
-    private readonly Action _restoreMainMenuInput;
+    private readonly Action _prepareNativeMenu;
     private readonly RuntimeState _state;
 
     private ServerStartGame? _pendingStart;
+    private ServerStartGame? _lastStartGame;
     private float _pendingStartRetryTimer;
     private int _pendingStartRetries;
 
@@ -35,16 +36,19 @@ internal sealed class StartGameFlow
 
     internal StartGameFlow(
         IMultiplayerPanel panel,
-        Action restoreMainMenuInput,
+        Action prepareNativeMenu,
         RuntimeState state)
     {
         _panel = panel ?? throw new ArgumentNullException(nameof(panel));
-        _restoreMainMenuInput = restoreMainMenuInput
-            ?? throw new ArgumentNullException(nameof(restoreMainMenuInput));
+        _prepareNativeMenu = prepareNativeMenu
+            ?? throw new ArgumentNullException(nameof(prepareNativeMenu));
         _state = state ?? throw new ArgumentNullException(nameof(state));
     }
 
     internal bool HasPending => _pendingStart.HasValue;
+    internal bool HasLastStartGame => _lastStartGame.HasValue;
+
+    internal ServerStartGame? LastStartGame => _lastStartGame;
 
     private static MultiplayerModeRules RulesOf(ServerStartGame start)
         => MultiplayerModes.Parse(start.Mode);
@@ -52,23 +56,44 @@ internal sealed class StartGameFlow
     internal void Cancel()
     {
         _pendingStart = null;
+        _lastStartGame = null;
+        _panel.SetCanReturnToGame(false);
         _forceNewGameOpts = null;
         StoryLaunchSetupPatch.MultiplayerStoryPending = false;
         _pendingStartRetries = 0;
         _pendingStartRetryTimer = 0f;
     }
 
+    internal void JoinCurrentRun(ServerStartGame pkt)
+    {
+        if (_lastStartGame.HasValue && SameStart(_lastStartGame.Value, pkt)
+            && (HasPending || !SceneRoles.IsMainMenuArea(_state.CurrentScene)))
+            return;
+        Begin(pkt);
+    }
+
     internal void Begin(ServerStartGame pkt)
     {
-        _restoreMainMenuInput();
+        _prepareNativeMenu();
         _pendingStart = pkt;
+        _lastStartGame = pkt;
         _pendingStartRetries = 0;
         _pendingStartRetryTimer = 1.0f;
         var world = (ClimbWorld)pkt.World;
+        _panel.SetCanReturnToGame(true);
         _panel.SetStatus(ClimbWorlds.IsStory(world)
             ? "Opening save selection..."
             : $"Opening {ClimbWorlds.Name(world)}...", true);
     }
+
+    private static bool SameStart(ServerStartGame a, ServerStartGame b)
+        => a.Difficulty == b.Difficulty
+           && a.SkipTutorials == b.SkipTutorials
+           && a.SkipPractice == b.SkipPractice
+           && a.AssistEnabled == b.AssistEnabled
+           && a.Mode == b.Mode
+           && a.ExtraConstraints == b.ExtraConstraints
+           && a.World == b.World;
 
     internal void Tick()
     {
@@ -100,7 +125,7 @@ internal sealed class StartGameFlow
         if (_pendingStart.HasValue && SceneRoles.IsMainMenuArea(currentScene))
         {
             // ForceStepTransition is consumed by MainMenu.Update, which the panel disables.
-            _restoreMainMenuInput();
+            _prepareNativeMenu();
 
             _pendingStartRetryTimer += Time.unscaledDeltaTime;
 

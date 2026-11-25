@@ -22,6 +22,15 @@ internal sealed class HostConfig
 
     /// <summary>Where everyone in the lobby will climb.</summary>
     public ClimbWorld World { get; init; } = ClimbWorld.Kami;
+
+    public bool Direct { get; init; }
+    public int Port { get; init; } = Protocol.DefaultPort;
+}
+
+internal sealed class DirectConnectConfig
+{
+    public string Address { get; init; } = "";
+    public int Port { get; init; } = Protocol.DefaultPort;
 }
 
 internal sealed class LobbyEntry

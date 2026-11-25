@@ -33,11 +33,13 @@ internal sealed class PitonActions
     /// <summary>Pitons the host knows of that this Lifeline is still missing.</summary>
     internal readonly List<ServerPitonPlaced> Spawn = new();
 
+    internal readonly List<ClientPitonPlaced> Restore = new();
+
     /// <summary>Pitons to take off this Lifeline. Every pointer here is in it this frame.</summary>
     internal readonly List<IntPtr> Detach = new();
 
     internal bool IsEmpty => Announce.Count == 0 && Removed.Count == 0 && Recovered.Count == 0
-                             && Spawn.Count == 0 && Detach.Count == 0;
+                             && Spawn.Count == 0 && Restore.Count == 0 && Detach.Count == 0;
 
     internal void Clear()
     {
@@ -45,6 +47,7 @@ internal sealed class PitonActions
         Removed.Clear();
         Recovered.Clear();
         Spawn.Clear();
+        Restore.Clear();
         Detach.Clear();
     }
 }
@@ -95,6 +98,7 @@ internal sealed class PitonSync
 
     private readonly Dictionary<IntPtr, uint> _ownByPointer = new();
     private readonly Dictionary<uint, Vector3> _ownPositions = new();
+    private readonly Dictionary<uint, ClientPitonPlaced> _ownPlaced = new();
     private readonly HashSet<uint> _ownUnbound = new();
     private readonly HashSet<uint> _ownTakenByOthers = new();
     private readonly Dictionary<uint, Remote> _remote = new();
@@ -130,6 +134,7 @@ internal sealed class PitonSync
         {
             _ownUnbound.Remove(id);
             _ownPositions.Remove(id);
+            _ownPlaced.Remove(id);
         }
         _ownTakenByOthers.Clear();
 
@@ -156,10 +161,21 @@ internal sealed class PitonSync
         if (_remote.TryGetValue(placed.PitonId, out var known))
         {
             known.Placed = placed;
+            if (known.State == RemoteState.Abandoned)
+            {
+                known.State = RemoteState.Pending;
+                known.Pointer = IntPtr.Zero;
+                known.RetryAt = 0;
+            }
             return;
         }
         if (_remote.Count >= MaxRemotePitons) return;
         _remote[placed.PitonId] = new Remote { Placed = placed, State = RemoteState.Pending };
+    }
+
+    internal void RememberLocal(uint localId, ClientPitonPlaced placed)
+    {
+        _ownPlaced[localId] = placed;
     }
 
     /// <summary>The host says this piton is gone.</summary>
@@ -188,6 +204,7 @@ internal sealed class PitonSync
         if (_ownUnbound.Remove(localId))
         {
             _ownPositions.Remove(localId);
+            _ownPlaced.Remove(localId);
             return;
         }
         if (_ownPositions.ContainsKey(localId)) _ownTakenByOthers.Add(localId);
@@ -220,6 +237,7 @@ internal sealed class PitonSync
             var id = _ownByPointer[pointer];
             _ownByPointer.Remove(pointer);
             _ownPositions.Remove(id);
+            _ownPlaced.Remove(id);
             if (!_ownTakenByOthers.Remove(id)) _actions.Removed.Add(id);
         }
 
@@ -286,11 +304,16 @@ internal sealed class PitonSync
 
         if (!_settling || settling) return;
         _settling = false;
-        // Ours before the reload, and not back after it: gone for good.
         foreach (var id in _ownUnbound)
         {
             _ownPositions.Remove(id);
             _actions.Removed.Add(id);
+            if (!_afterReload || !_ownPlaced.TryGetValue(id, out var saved)) continue;
+            var restored = saved;
+            restored.PitonId = _nextLocalId++;
+            _actions.Restore.Add(restored);
+            _ownPlaced.Remove(id);
+            _ownPlaced[restored.PitonId] = restored;
         }
         _ownUnbound.Clear();
     }
@@ -385,6 +408,7 @@ internal sealed class PitonSync
     {
         _ownByPointer.Clear();
         _ownPositions.Clear();
+        _ownPlaced.Clear();
         _ownUnbound.Clear();
         _ownTakenByOthers.Clear();
         _remote.Clear();

@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using CairnMultiplayer.Shared;
 using CairnMultiplayerMod.Internal.Diagnostics;
@@ -17,6 +18,26 @@ internal sealed partial class NetworkManager
         OnHandshakeAck?.Invoke();
     }
 
+    private void HandleDirectSessionInfo(BinaryReader reader)
+    {
+        var packet = new ServerDirectSessionInfo();
+        packet.Deserialize(reader);
+        LocalPlayerId = packet.AssignedPlayerId;
+        if (_session is DirectTransportSession direct)
+        {
+            direct.LocalPeerId = (ulong)packet.AssignedPlayerId;
+            direct.SetLocalSessionInfo(packet);
+        }
+        ServerName = packet.ServerName;
+        var mode = MultiplayerModes.Parse(packet.Mode);
+        var world = Enum.IsDefined(typeof(ClimbWorld), packet.World)
+            ? (ClimbWorld)packet.World
+            : ClimbWorld.Kami;
+        ModLog.Info($"[Direct] Session '{packet.ServerName}' assigned player id {packet.AssignedPlayerId} " +
+                    $"({mode.Name}, {ClimbWorlds.Name(world)})");
+        OnDirectSessionInfo?.Invoke(packet);
+    }
+
     private void HandleHandshakeReject(BinaryReader reader)
     {
         var packet = new ServerHandshakeReject();
@@ -30,6 +51,7 @@ internal sealed partial class NetworkManager
     {
         var packet = new ServerPlayerJoined();
         packet.Deserialize(reader);
+        if (packet.PlayerId == LocalPlayerId) return;
         _remotePlayers[packet.PlayerId] = new RemotePlayer
         {
             Id = packet.PlayerId,
@@ -52,7 +74,17 @@ internal sealed partial class NetworkManager
     {
         var packet = new ServerStartGame();
         packet.Deserialize(reader);
-        ModLog.Debug($"[CairnMP] StartGame: difficulty={(GameDifficulty)packet.Difficulty} skipTut={packet.SkipTutorials} skipPra={packet.SkipPractice} assist={packet.AssistEnabled}");
+        var startMode = MultiplayerModes.Parse(packet.Mode);
+        var startWorld = Enum.IsDefined(typeof(ClimbWorld), packet.World)
+            ? (ClimbWorld)packet.World
+            : ClimbWorld.Kami;
+        ModLog.Debug($"[CairnMP] StartGame: mode={startMode.Name} world={ClimbWorlds.Name(startWorld)} " +
+                     $"difficulty={(GameDifficulty)packet.Difficulty} skipTut={packet.SkipTutorials} skipPra={packet.SkipPractice} assist={packet.AssistEnabled}");
         OnStartGameReceived?.Invoke(packet);
+    }
+
+    private void HandleCurrentRun(BinaryReader reader)
+    {
+        HandleStartGame(reader);
     }
 }

@@ -18,14 +18,58 @@ internal static partial class RopeInterop
     public static bool HasRopeTeamAnchors => _ropeSession != null;
     public static bool IsNativeBelayEngaged => _ropeSession?.State == RopeBindingState.Attached;
 
+    internal static bool TryGetDirectRopeHarnesses(out Harness local, out Harness partner)
+    {
+        local = null;
+        partner = null;
+        var binding = IsNativeBelayEngaged ? _ropeBinding : null;
+        return binding != null && binding.TryGetHarnesses(out local, out partner);
+    }
+
+    internal static bool TryGetDirectBelay(out LogicalRope rope, out Harness local, out Harness partner)
+    {
+        rope = null;
+        local = null;
+        partner = null;
+        var binding = IsNativeBelayEngaged ? _ropeBinding : null;
+        if (binding == null || !binding.TryGetHarnesses(out local, out partner)) return false;
+        rope = binding.Rope;
+        return rope != null;
+    }
+
+    internal static void TightenRopeForFall(IntPtr harnessPointer)
+    {
+        var binding = IsNativeBelayEngaged ? _ropeBinding : null;
+        if (binding == null || !binding.MatchesHarness(harnessPointer)) return;
+        binding.TightenForFall();
+    }
+
+    internal static bool IsLocalFalling()
+    {
+        try
+        {
+            var controller = ResolveLocalClimbController();
+            return controller != null && controller.IsFalling;
+        }
+        catch (Exception exception)
+        {
+            ModLog.SuppressedException("rope.local-falling", exception);
+            return false;
+        }
+    }
+
     public static bool UpdateRopeTeamAnchor(int partnerId, Harness partner)
     {
         try
         {
             if (_dropRopeAfterPhysics)
             {
-                ReleaseAllAnchors();
-                return false;
+                if (!IsLocalFalling())
+                {
+                    ReleaseAllAnchors();
+                    return false;
+                }
+                _dropRopeAfterPhysics = false;
             }
             if (!RopeTeamFallPatch.IsInstalled) return false;
             var local = ResolveLocalHarness();
@@ -79,7 +123,7 @@ internal static partial class RopeInterop
             if (_ropeBinding.Maintain()) return true;
         }
         catch (Exception ex) { ModLog.Warning("[RopeTeam] Physics attachment lost: " + ex.Message); }
-        // Destroying the rope from this prefix closes the process. Update drops it.
+        if (IsLocalFalling()) return true;
         _dropRopeAfterPhysics = true;
         return false;
     }
@@ -138,14 +182,29 @@ internal static partial class RopeInterop
         private float _pendingSnapLength = -1f;
         private int _snapAttempts;
         private bool _harnessLineLogged;
+        private bool _fallGripped;
+        private double _fallGrippedUntil;
+        private string _lastMaintainFailure;
 
         internal NativeRopeBinding(Harness local, Harness partner, Lifeline lifeline, LogicalRope source, float length)
         {
             _local = local; _partner = partner; _lifeline = lifeline;
             _source = source; _length = length;
         }
+        internal LogicalRope Rope => _disposed ? null : _rope;
+
         internal bool Matches(Harness local, Harness partner)
             => _local != null && _partner != null && _local.Pointer == local.Pointer && _partner.Pointer == partner.Pointer;
+
+        internal bool MatchesHarness(IntPtr pointer)
+            => !_disposed && _local != null && _local.Pointer == pointer;
+
+        internal bool TryGetHarnesses(out Harness local, out Harness partner)
+        {
+            local = _disposed ? null : _local;
+            partner = _disposed ? null : _partner;
+            return local != null && partner != null;
+        }
         internal bool Owns(LogicalRope rope) => _rope != null && rope != null && _rope.Pointer == rope.Pointer;
         internal bool OwnsRenderer(LogicalRopeRenderer renderer)
             => _renderer != null && renderer != null && _renderer.Pointer == renderer.Pointer;
@@ -239,12 +298,17 @@ internal static partial class RopeInterop
         public bool Attach()
         {
             SynchronizePartnerAttachment();
-            if (_local == null || _partner == null || _lifeline == null
-                || !TryGetHarnessAttachPosition(_local, out _lastLocal)
-                || !TryGetHarnessAttachPosition(_partner, out _lastPartner)
-                || !RopeAttachmentPolicy.CanReach(_length, Vector3.Distance(_lastLocal, _lastPartner))) return false;
+            if (_local == null || _partner == null || _lifeline == null)
+                return FailAttach("missing harness or lifeline");
+            if (!TryGetHarnessAttachPosition(_local, out _lastLocal))
+                return FailAttach("local harness attach point unavailable");
+            if (!TryGetHarnessAttachPosition(_partner, out _lastPartner))
+                return FailAttach("partner harness attach point unavailable");
+            var distance = Vector3.Distance(_lastLocal, _lastPartner);
+            if (!RopeAttachmentPolicy.CanReach(_length, distance))
+                return FailAttach("attach distance " + distance.ToString("F2") + " outside rope " + _length.ToString("F2"));
             _rope.ForceInitialize();
-            if (!_rope.IsInitialized) return false;
+            if (!_rope.IsInitialized) return FailAttach("native rope did not initialize");
             _part.pinConstraintHandler.DetachAll();
             // Native SharedRopeGamemode uses these same endpoint sides.
             _rope.AttachTo(_local.Cast<IRopeHolder>(), RopeSide.End, true);
@@ -252,7 +316,7 @@ internal static partial class RopeInterop
             _rope.MaxLengthMeters = _length;
             if (!RopeAttachmentPolicy.TryGetInitialLength(
                     _length, Vector3.Distance(_lastLocal, _lastPartner), out var initialLength))
-                return false;
+                return FailAttach("initial rope length refused");
             // Cairn applies rope length from LogicalRope.FixedUpdate. Calling
             // SetLengthInstant here, during Update, is rejected and leaves the
             // cloned part's full-length particles in place. The physics prefix
@@ -266,7 +330,7 @@ internal static partial class RopeInterop
             _rope.shouldUseRopeLineRendererLateUpdate = false;
             SetRopeRendered(false);
             _attached = true;
-            if (!HasBothAttachments) return false;
+            if (!HasBothAttachments) return FailAttach("native rope does not report both holders");
             // Never the Lifeline's securing rope. Cairn would hang new quickdraws on it, measure
             // the rope left from a piton it does not hold (shown as "0 m") and look for that
             // piton in a secured fall. The climber's own rope and pitons keep protecting them.
@@ -276,6 +340,12 @@ internal static partial class RopeInterop
             ModLog.Info("[RopeTeam] Direct harness rope attached (no piton), max=" + _length
                 + ", initial=" + initialLength);
             return true;
+        }
+
+        private bool FailAttach(string reason)
+        {
+            ModLog.Warning("[RopeTeam] Attachment refused: " + reason);
+            return false;
         }
 
         // The piton path does not enable a component on Harness itself. PawnSkinHandler
@@ -369,6 +439,40 @@ internal static partial class RopeInterop
                 + ", reported=" + reported);
         }
 
+        internal void TightenForFall()
+        {
+            var now = Time.realtimeSinceStartupAsDouble;
+            if (_disposed || _rope == null || !_rope.IsInitialized) return;
+            if (_fallGripped && now < _fallGrippedUntil) return;
+            if (!TryGetHarnessAttachPosition(_local, out var local)
+                || !TryGetHarnessAttachPosition(_partner, out var partner)) return;
+            var distance = Vector3.Distance(local, partner);
+            if (!RopeAttachmentPolicy.TryGetFallLength(_length, distance, out var length)) return;
+
+            _pendingSnapLength = length;
+            _snapAttempts = 0;
+            _rope.MaxLengthMeters = length;
+            try { _rope.SetLengthInstant(length); }
+            catch (Exception exception) { ModLog.SuppressedException("rope.fall-length", exception); }
+            _rope.RequestSetLength(length, false, true);
+            _fallGripped = true;
+            _fallGrippedUntil = now + 3;
+            ModLog.Info("[RopeTeam] Rope tightened for fall, length=" + length.ToString("F2"));
+        }
+
+        internal void RestoreSlack()
+        {
+            if (_disposed || _rope == null || !_rope.IsInitialized || !_fallGripped) return;
+
+            _pendingSnapLength = _length;
+            _snapAttempts = 0;
+            _rope.MaxLengthMeters = _length;
+            _rope.RequestSetLength(_length, false, true);
+            _fallGripped = false;
+            _fallGrippedUntil = 0;
+            ModLog.Info("[RopeTeam] Rope slack restored, length=" + _length.ToString("F2"));
+        }
+
         internal void DrawHarnessLine()
         {
             SetRopeRendered(false);
@@ -435,13 +539,41 @@ internal static partial class RopeInterop
         public bool Maintain()
         {
             SynchronizePartnerAttachment();
-            if (!HasBothAttachments || !TryGetHarnessAttachPosition(_local, out var local)
-                || !TryGetHarnessAttachPosition(_partner, out var partner)) return false;
+            try { SyncBelayLength(); }
+            catch (Exception exception) { return FailMaintain("length sync failed: " + exception.Message); }
+            if (!HasBothAttachments) return FailMaintain("holders detached");
+            if (!TryGetHarnessAttachPosition(_local, out var local))
+                return FailMaintain("local attach point unavailable");
+            if (!TryGetHarnessAttachPosition(_partner, out var partner))
+                return FailMaintain("partner attach point unavailable");
             // Teleports must not drag solver particles across the world.
-            if (Vector3.Distance(local, _lastLocal) > 5 || Vector3.Distance(partner, _lastPartner) > 5) return false;
+            if (Vector3.Distance(local, _lastLocal) > 5 || Vector3.Distance(partner, _lastPartner) > 5)
+            {
+                _lastLocal = local; _lastPartner = partner;
+                _rope.TeleportOnAttachPoints(RopeTeleportMode.PreTeleportOnLineAndFabrik, false, false);
+                DrawHarnessLine();
+                return true;
+            }
             _lastLocal = local; _lastPartner = partner;
             DrawHarnessLine();
             return true;
+        }
+
+        private bool FailMaintain(string reason)
+        {
+            if (_lastMaintainFailure != reason)
+            {
+                _lastMaintainFailure = reason;
+                ModLog.Warning("[RopeTeam] Rope maintenance failed: " + reason);
+            }
+            return false;
+        }
+
+        private void SyncBelayLength()
+        {
+            var controller = ResolveLocalClimbController();
+            if (controller != null && controller.IsFalling) TightenForFall();
+            else if (_fallGripped && Time.realtimeSinceStartupAsDouble >= _fallGrippedUntil) RestoreSlack();
         }
 
         private void SynchronizePartnerAttachment()

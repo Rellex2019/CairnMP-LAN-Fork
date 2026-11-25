@@ -12,6 +12,8 @@ internal interface IMultiplayerPanel
     event Action<ulong> OnJoinByLobbyIdRequested;
     event Action OnDisconnectRequested;
     event Action OnStartRequested;
+    event Action OnReturnToGameRequested;
+    event Action<DirectConnectConfig> OnJoinDirectRequested;
     event Action OnPanelClosed;
 
     bool IsVisible { get; }
@@ -23,6 +25,8 @@ internal interface IMultiplayerPanel
     void SetConnecting(string status);
     void SetBrowserLobbies(IReadOnlyList<LobbyEntry> lobbies);
     void SetCurrentLobbyName(string name);
+    void SetCanReturnToGame(bool canReturn);
+    void SetSession(IMultiplayerSession session);
     void Tick(float dt);
     void OnGUI();
     void DestroyResources();

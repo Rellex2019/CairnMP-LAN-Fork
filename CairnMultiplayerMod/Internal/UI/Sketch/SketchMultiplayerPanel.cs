@@ -32,7 +32,7 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
     private static readonly IReadOnlyList<ClimbWorld> WorldValues = ClimbWorlds.Available;
     private static readonly Color Refusal = new(0.82f, 0.38f, 0.33f, 1f);
 
-    private readonly SteamLobbyManager _lobby;
+    private IMultiplayerSession _session;
     private readonly Func<ClimbWorld, string> _whyUnavailable;
 
     private GameObject _canvasGo;
@@ -48,6 +48,10 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
     private string _lobbyName = "";
     private IReadOnlyList<LobbyEntry> _lobbies;
     private string _codeDraft = "";
+    private string _addressDraft = "";
+    private string _portDraft = Protocol.DefaultPort.ToString();
+    private bool _directHost;
+    private bool _canReturnToGame;
     private int _modeIndex, _worldIndex;
     private string _worldIssue;
     private int _browsePage;
@@ -61,16 +65,17 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
     private readonly List<TextMeshProUGUI> _memberNames = new(), _memberRoles = new();
 
     private TextMeshProUGUI _statusLabel;
-    private TMP_InputField _codeInput;
+    private TMP_InputField _codeInput, _addressInput, _portInput;
     private string _autoLobbyName = "";
     private int _slots = MaxSlots, _visIndex;
     private TextMeshProUGUI _slotsLabel, _visLabel, _worldLabel, _worldNote, _createLabel, _joinLabel, _refreshLabel;
+    private TextMeshProUGUI _networkLabel, _portLabel, _directJoinLabel;
     private TextMeshProUGUI _subtitleLabel, _bannerBadge;
-    private Button _createBtn, _joinBtn, _refreshBtn, _previousPage, _nextPage, _copyBtn;
+    private Button _createBtn, _joinBtn, _refreshBtn, _previousPage, _nextPage, _copyBtn, _directJoinBtn;
     private Transform _browseList;
     private GameObject _browseEmpty;
     private TextMeshProUGUI _connCodeLabel, _connCountLabel, _connCopyLabel, _titleLabel, _pageLabel, _browseSummary;
-    private GameObject _connStart, _connStartHint;
+    private GameObject _connStart, _connStartHint, _connReturn, _visibilityCell, _portCell;
 
     public event Action<HostConfig> OnHostRequested;
     public event Action<string> OnJoinByCodeRequested;
@@ -78,15 +83,20 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
     public event Action<ulong> OnJoinByLobbyIdRequested;
     public event Action OnDisconnectRequested;
     public event Action OnStartRequested;
+    public event Action OnReturnToGameRequested;
+    public event Action<DirectConnectConfig> OnJoinDirectRequested;
     public event Action OnPanelClosed;
 
     public bool IsVisible => _visible;
 
-    internal SketchMultiplayerPanel(SteamLobbyManager lobby, Func<ClimbWorld, string> whyUnavailable)
+    internal SketchMultiplayerPanel(IMultiplayerSession session, Func<ClimbWorld, string> whyUnavailable)
     {
-        _lobby = lobby ?? throw new ArgumentNullException(nameof(lobby));
+        _session = session ?? throw new ArgumentNullException(nameof(session));
         _whyUnavailable = whyUnavailable ?? throw new ArgumentNullException(nameof(whyUnavailable));
         _slots = Mathf.Clamp(ModConfig.MaxPlayers?.Value ?? MaxSlots, MinSlots, MaxSlots);
+        _addressDraft = ModConfig.DirectAddress?.Value ?? "";
+        _portDraft = ParsePort(ModConfig.DirectPort?.Value.ToString()).ToString();
+        _directHost = ModConfig.DirectHost?.Value ?? false;
     }
 
     private MultiplayerModeRules SelectedMode => ModeValues[Mathf.Clamp(_modeIndex, 0, ModeValues.Count - 1)];
@@ -164,6 +174,8 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
     {
         if (_isConnecting && _contentGo != null && _contentGo.transform.childCount > 0) return;
         if (_codeInput != null) _codeDraft = _codeInput.text ?? "";
+        if (_addressInput != null) _addressDraft = _addressInput.text ?? "";
+        if (_portInput != null) _portDraft = _portInput.text ?? "";
         _current = screen;
         if (_contentGo == null) return;
         ClearScreenRefs();
@@ -217,7 +229,7 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
 
         if (screen == Screen.Lobby)
         {
-            var name = string.IsNullOrEmpty(_lobby.CurrentLobbyName) ? _lobbyName : _lobby.CurrentLobbyName;
+            var name = string.IsNullOrEmpty(_session.CurrentLobbyName) ? _lobbyName : _session.CurrentLobbyName;
             _titleLabel = SketchUiKit.LabelBox(title.transform, "Title", new Vector2(0f, 4f), new Vector2(660f, 60f),
                 string.IsNullOrEmpty(name) ? "LOBBY" : name, 32f, SketchUiKit.TextCream,
                 TextAlignmentOptions.Center, logo: true);
@@ -385,22 +397,62 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
         _slotsLabel = SketchUiKit.Stepper(slotsCell, _slots.ToString(),
             (UnityAction)(() => AdjustSlots(-1)), (UnityAction)(() => AdjustSlots(+1)));
 
-        var visCell = SketchUiKit.RowStrip(body.transform, "Visibility", -70f);
-        _visLabel = SketchUiKit.Stepper(visCell, VisLabels[_visIndex],
+        var visibilityCell = SketchUiKit.RowStrip(body.transform, "Visibility", -70f);
+        _visibilityCell = visibilityCell.parent.gameObject;
+        _visLabel = SketchUiKit.Stepper(visibilityCell, VisLabels[_visIndex],
             (UnityAction)(() => CycleVisibility(-1)), (UnityAction)(() => CycleVisibility(+1)));
+
+        var portCell = SketchUiKit.RowStrip(body.transform, "Port", -70f);
+        _portCell = portCell.parent.gameObject;
+        _portLabel = SketchUiKit.Stepper(portCell, _portDraft,
+            (UnityAction)(() => AdjustPort(-1)), (UnityAction)(() => AdjustPort(+1)));
+
+        var networkCell = SketchUiKit.RowStrip(body.transform, "Connection", -126f);
+        _networkLabel = SketchUiKit.Stepper(networkCell, NetworkLabel(),
+            (UnityAction)(() => ToggleDirectHost()), (UnityAction)(() => ToggleDirectHost()));
 
         foreach (var button in worldCell.GetComponentsInChildren<Button>()) _settingButtons.Add(button);
         foreach (var button in slotsCell.GetComponentsInChildren<Button>()) _settingButtons.Add(button);
-        foreach (var button in visCell.GetComponentsInChildren<Button>()) _settingButtons.Add(button);
+        foreach (var button in _visibilityCell.GetComponentsInChildren<Button>()) _settingButtons.Add(button);
+        foreach (var button in _portCell.GetComponentsInChildren<Button>()) _settingButtons.Add(button);
+        foreach (var button in networkCell.GetComponentsInChildren<Button>()) _settingButtons.Add(button);
 
-        _createBtn = PrimaryButton(body.transform, new Vector2(0f, -146f), new Vector2(420f, 70f),
+        _createBtn = PrimaryButton(body.transform, new Vector2(0f, -182f), new Vector2(420f, 70f),
             "CREATE LOBBY", out _createLabel, (UnityAction)OnCreateClicked);
 
-        _worldNote = SketchUiKit.LabelBox(body.transform, "DestinationNote", new Vector2(0f, -202f),
+        _worldNote = SketchUiKit.LabelBox(body.transform, "DestinationNote", new Vector2(0f, -238f),
             new Vector2(680f, 28f), "", 14f, SketchUiKit.TextDim, TextAlignmentOptions.Center);
 
         BuildStatus(body.transform);
         RefreshDestination();
+        RefreshCreateNetwork();
+    }
+
+    private string NetworkLabel() => _directHost ? "Direct IP" : "Steam";
+    private string CreateLabelText() => _directHost ? "HOST BY IP" : "CREATE LOBBY";
+
+    private void ToggleDirectHost()
+    {
+        if (_isConnecting || _isConnected) return;
+        _directHost = !_directHost;
+        RefreshCreateNetwork();
+    }
+
+    private void AdjustPort(int d)
+    {
+        if (_isConnecting || _isConnected) return;
+        if (!int.TryParse(_portDraft, out var port)) port = Protocol.DefaultPort;
+        port = Mathf.Clamp(port + d, 1024, 65535);
+        _portDraft = port.ToString();
+        if (_portLabel != null) _portLabel.text = _portDraft;
+    }
+
+    private void RefreshCreateNetwork()
+    {
+        if (_networkLabel != null) _networkLabel.text = NetworkLabel();
+        if (_visibilityCell != null) _visibilityCell.SetActive(!_directHost);
+        if (_portCell != null) _portCell.SetActive(_directHost);
+        if (_createLabel != null) _createLabel.text = _directHost ? "HOST BY IP" : "CREATE LOBBY";
     }
 
     private void CycleWorld(int d)
@@ -437,8 +489,8 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
     /// </summary>
     private void BuildModeBanner(Transform parent, float y, bool showChange)
     {
-        var rules = _isConnected ? _lobby.CurrentModeRules : SelectedMode;
-        var world = _isConnected ? _lobby.CurrentWorld : SelectedWorld;
+        var rules = _isConnected ? _session.CurrentModeRules : SelectedMode;
+        var world = _isConnected ? _session.CurrentWorld : SelectedWorld;
 
         var banner = SketchUiKit.Make("ModeBanner", parent);
         SketchUiKit.Box(banner, new Vector2(0f, y), new Vector2(660f, 84f));
@@ -473,8 +525,21 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
         _joinBtn = PrimaryButton(body.transform, new Vector2(0f, 40f), new Vector2(420f, 70f),
             "JOIN", out _joinLabel, (UnityAction)OnJoinClicked);
 
-        var hint = SketchUiKit.LabelBox(body.transform, "Hint", new Vector2(0f, -50f), new Vector2(620f, 60f),
-            "The host sees the code on their lobby screen. The game mode is theirs to choose, and you will play by it.",
+        var addressCell = SketchUiKit.RowStrip(body.transform, "IP address", -50f, 360f);
+        _addressInput = SketchUiKit.NativeField(addressCell, "10.0.0.1", 16);
+        _addressInput.text = _addressDraft;
+        _addressInput.onValueChanged.AddListener((UnityAction<string>)(value => _addressDraft = value ?? ""));
+
+        var portCell = SketchUiKit.RowStrip(body.transform, "Port", -110f, 360f);
+        _portInput = SketchUiKit.NativeField(portCell, "14000", 16);
+        _portInput.text = _portDraft;
+        _portInput.onValueChanged.AddListener((UnityAction<string>)(value => _portDraft = value ?? ""));
+
+        _directJoinBtn = PrimaryButton(body.transform, new Vector2(0f, -170f), new Vector2(420f, 64f),
+            "JOIN BY IP", out _directJoinLabel, (UnityAction)OnJoinDirectClicked);
+
+        var hint = SketchUiKit.LabelBox(body.transform, "Hint", new Vector2(0f, -226f), new Vector2(620f, 60f),
+            "Use a Steam code, or connect directly to the host's IP (for example over Radmin VPN).",
             15f, SketchUiKit.TextDim, TextAlignmentOptions.Center);
         hint.enableWordWrapping = true;
 
@@ -621,11 +686,14 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
             "START CLIMB", out _, (UnityAction)(() => OnStartRequested?.Invoke())).gameObject;
         // A guest whose game cannot open the destination reads why here, while there is still
         // time to sort it out or leave, instead of being the one left behind at the start.
-        var worldIssue = _whyUnavailable(_lobby.CurrentWorld);
+        var worldIssue = _whyUnavailable(_session.CurrentWorld);
         var startHint = SketchUiKit.LabelBox(body.transform, "StartHint", new Vector2(0f, -212f),
             new Vector2(680f, 30f), worldIssue ?? "Waiting for the host to start", worldIssue != null ? 14f : 15f,
             worldIssue != null ? Refusal : SketchUiKit.TextDim, TextAlignmentOptions.Center);
         _connStartHint = startHint.gameObject;
+
+        _connReturn = PrimaryButton(body.transform, new Vector2(0f, -212f), new Vector2(420f, 60f),
+            "RETURN TO CLIMB", out _, (UnityAction)(() => OnReturnToGameRequested?.Invoke())).gameObject;
 
         var leave = SketchUiKit.Make("LeaveLobby", body.transform);
         SketchUiKit.Box(leave, new Vector2(0f, -262f), new Vector2(260f, 38f));
@@ -638,7 +706,7 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
 
     private void RefreshLobby()
     {
-        var lobby = _lobby;
+        var lobby = _session;
         string code = lobby?.CurrentRoomCode;
         if (_connCodeLabel != null) _connCodeLabel.text = string.IsNullOrEmpty(code) ? "----" : code;
         if (_copyBtn != null) _copyBtn.interactable = !string.IsNullOrEmpty(code);
@@ -649,8 +717,9 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
         }
 
         bool isHost = lobby?.IsHost ?? false;
-        if (_connStart != null) _connStart.SetActive(isHost);
-        if (_connStartHint != null) _connStartHint.SetActive(!isHost);
+        if (_connStart != null) _connStart.SetActive(isHost && !_canReturnToGame);
+        if (_connStartHint != null) _connStartHint.SetActive(!isHost && !_canReturnToGame);
+        if (_connReturn != null) _connReturn.SetActive(_canReturnToGame);
 
         var members = lobby?.Members;
         int count = members?.Count ?? 0;
@@ -686,6 +755,8 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
             Visibility = VisValues[_visIndex],
             Mode = SelectedMode.Mode,
             World = SelectedWorld,
+            Direct = _directHost,
+            Port = ParsePort(_portDraft),
         };
         OnHostRequested?.Invoke(cfg);
     }
@@ -698,9 +769,25 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
         OnJoinByCodeRequested?.Invoke(code);
     }
 
+    private static int ParsePort(string value)
+        => int.TryParse(value, out var port) && port >= 1024 && port <= 65535 ? port : Protocol.DefaultPort;
+
+    private void OnJoinDirectClicked()
+    {
+        if (_isConnecting || _isConnected) return;
+        var address = _addressInput != null ? _addressInput.text?.Trim() : _addressDraft?.Trim();
+        if (string.IsNullOrEmpty(address)) return;
+
+        OnJoinDirectRequested?.Invoke(new DirectConnectConfig
+        {
+            Address = address,
+            Port = ParsePort(_portInput != null ? _portInput.text : _portDraft),
+        });
+    }
+
     private void OnCopyClicked()
     {
-        var code = _lobby.CurrentRoomCode;
+        var code = _session.CurrentRoomCode;
         if (string.IsNullOrEmpty(code)) return;
         GUIUtility.systemCopyBuffer = code;
         if (_connCopyLabel != null) _connCopyLabel.text = "COPIED";
@@ -755,6 +842,18 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
         _lobbyName = name ?? "";
         if (_titleLabel != null) _titleLabel.text = string.IsNullOrEmpty(_lobbyName) ? "LOBBY" : _lobbyName;
     }
+
+    public void SetSession(IMultiplayerSession session)
+    {
+        if (session != null) _session = session;
+    }
+
+    public void SetCanReturnToGame(bool canReturn)
+    {
+        _canReturnToGame = canReturn;
+        if (_connReturn != null) _connReturn.SetActive(canReturn);
+    }
+
 
     public void Tick(float dt)
     {
@@ -849,6 +948,8 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
         _bodyGroup = null;
         _focusTarget = null;
         if (_codeInput != null) _codeDraft = _codeInput.text ?? "";
+        if (_addressInput != null) _addressDraft = _addressInput.text ?? "";
+        if (_portInput != null) _portDraft = _portInput.text ?? "";
         if (_canvasGo != null) { _canvasGo.SetActive(false); Object.Destroy(_canvasGo); }
         _canvasGo = null;
         _contentGo = null;
@@ -877,8 +978,11 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
     {
         bool enabled = !_isConnecting && !_isConnected;
         if (_codeInput != null) _codeInput.interactable = enabled;
+        if (_addressInput != null) _addressInput.interactable = enabled;
+        if (_portInput != null) _portInput.interactable = enabled;
         if (_createBtn != null) _createBtn.interactable = enabled && _worldIssue == null;
         if (_joinBtn != null) _joinBtn.interactable = enabled && !string.IsNullOrWhiteSpace(_codeInput?.text);
+        if (_directJoinBtn != null) _directJoinBtn.interactable = enabled;
         foreach (var button in _navigationButtons) button.interactable = enabled;
         foreach (var button in _settingButtons) button.interactable = enabled;
         foreach (var button in _browseButtons) button.interactable = enabled && !_isBrowsing;
@@ -886,8 +990,9 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
         int pageCount = Math.Max(1, ((_lobbies?.Count ?? 0) + MaxBrowseRows - 1) / MaxBrowseRows);
         if (_previousPage != null) _previousPage.interactable = enabled && !_isBrowsing && _browsePage > 0;
         if (_nextPage != null) _nextPage.interactable = enabled && !_isBrowsing && _browsePage < pageCount - 1;
-        if (_createLabel != null) _createLabel.text = _isConnecting ? "CONNECTING..." : "CREATE LOBBY";
+        if (_createLabel != null) _createLabel.text = _isConnecting ? "CONNECTING..." : CreateLabelText();
         if (_joinLabel != null) _joinLabel.text = _isConnecting ? "CONNECTING..." : "JOIN";
+        if (_directJoinLabel != null) _directJoinLabel.text = _isConnecting ? "CONNECTING..." : "JOIN BY IP";
     }
 
     private static Button PrimaryButton(Transform parent, Vector2 pos, Vector2 size, string text,
@@ -903,18 +1008,20 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
 
     private void ClearScreenRefs()
     {
-        _statusLabel = null; _codeInput = null;
+        _statusLabel = null; _codeInput = null; _addressInput = null; _portInput = null;
         _slotsLabel = null; _visLabel = null; _createLabel = null; _joinLabel = null; _refreshLabel = null;
+        _networkLabel = null; _portLabel = null; _directJoinLabel = null;
+        _visibilityCell = null; _portCell = null;
         _worldLabel = null; _worldNote = null; _subtitleLabel = null; _bannerBadge = null;
         _worldIssue = null;
-        _createBtn = null; _joinBtn = null; _browseList = null; _browseEmpty = null;
+        _createBtn = null; _joinBtn = null; _directJoinBtn = null; _browseList = null; _browseEmpty = null;
         _connCodeLabel = null; _connCountLabel = null; _connCopyLabel = null;
         _titleLabel = null; _pageLabel = null; _browseSummary = null;
         _refreshBtn = null; _previousPage = null; _nextPage = null; _copyBtn = null;
         _browseButtons.Clear(); _navigationButtons.Clear(); _settingButtons.Clear();
         _memberRows.Clear(); _memberNames.Clear(); _memberRoles.Clear();
         _copyFeedbackSeconds = 0f;
-        _connStart = null; _connStartHint = null;
+        _connStart = null; _connStartHint = null; _connReturn = null;
     }
 
     private static void DestroyChildren(Transform parent)
@@ -927,7 +1034,7 @@ internal sealed class SketchMultiplayerPanel : IMultiplayerPanel
 
     private string GetLocalPlayerName()
     {
-        var n = _lobby.LocalPersonaName;
+        var n = _session.LocalPersonaName;
         if (string.IsNullOrEmpty(n)) n = ModConfig.PlayerName?.Value;
         return string.IsNullOrEmpty(n) ? "Player" : n;
     }

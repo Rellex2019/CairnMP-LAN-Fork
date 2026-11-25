@@ -142,7 +142,9 @@ internal sealed class ReviveFeature : MultiplayerFeature
         _downedUntil = Game.Time.UnscaledTime + DownedSeconds;
         _lastShownSecondsLeft = -1;
         Report(ClimberCondition.Down);
-        LogInfo($"Down, waiting for help for {DownedSeconds:F0}s");
+        LogInfo($"Down, waiting for help for {DownedSeconds:F0}s " +
+                $"(mode={Rules.Name}, connected={IsConnected}, standingTeammates={CountStandingTeammates()}, " +
+                $"downedPlayers={_downedPlayers.Count}, outPlayers={_outPlayers.Count})");
     }
 
     private void Tick()

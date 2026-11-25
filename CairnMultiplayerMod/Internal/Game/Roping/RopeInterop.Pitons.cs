@@ -109,6 +109,7 @@ internal static partial class RopeInterop
             foreach (var placed in actions.Spawn) SpawnRemotePiton(lifeline, placed, now);
             foreach (var (localId, pointer) in actions.Announce) AnnounceLocalPiton(network, localId, pointer);
             foreach (var localId in actions.Removed) network.SendPitonRemoved(localId);
+            foreach (var placed in actions.Restore) network.SendPitonPlaced(placed);
             foreach (var pitonId in actions.Recovered)
             {
                 network.SendPitonRecovered(pitonId);
@@ -180,7 +181,7 @@ internal static partial class RopeInterop
             var hp = piton.pitonHp;
             var itemId = piton.ItemId.value;
 
-            network.SendPitonPlaced(new ClientPitonPlaced
+            var placed = new ClientPitonPlaced
             {
                 PitonId = localId,
                 PosX = position.x,
@@ -193,7 +194,9 @@ internal static partial class RopeInterop
                 Quality = quality,
                 PitonHp = hp,
                 ItemId = itemId,
-            });
+            };
+            network.SendPitonPlaced(placed);
+            _pitons.RememberLocal(localId, placed);
             ModLog.Debug($"[Piton] Local piton #{localId} detected @ ({position.x:F1},{position.y:F1},{position.z:F1}) quality={quality} hp={hp} itemId={itemId}");
         }
         catch (Exception exception)

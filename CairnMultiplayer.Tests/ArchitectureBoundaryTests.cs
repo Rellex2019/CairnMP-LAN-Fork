@@ -94,6 +94,7 @@ public sealed class ArchitectureBoundaryTests
         Assert.DoesNotContain("using Unity", source, StringComparison.Ordinal);
         Assert.DoesNotContain("using CairnMultiplayerMod.Internal.Game", source, StringComparison.Ordinal);
         Assert.DoesNotContain(".Deserialize(", source, StringComparison.Ordinal);
+        Assert.Contains("id != PacketId.ServerStartGame", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -223,10 +224,38 @@ public sealed class ArchitectureBoundaryTests
         Assert.Contains("TryGetInitialLength", interop, StringComparison.Ordinal);
         Assert.Contains("renderer.parts = _rope.ropeParts", interop, StringComparison.Ordinal);
         Assert.Contains("nameof(LogicalRopeRenderer.LateUpdate)", patch, StringComparison.Ordinal);
+        Assert.Contains("\"ShouldSnap\"", patch, StringComparison.Ordinal);
         AssertPartnerRopeLengthIsAppliedFromFixedUpdate(interop);
         Assert.Contains("SetHarnessVisual", interop, StringComparison.Ordinal);
         Assert.Contains("RestoreHarnessVisual", interop, StringComparison.Ordinal);
         Assert.Contains("MC_Outift_NoHarness", interop, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SteamStartIsAlsoSentAsAReliableGamePacket()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            ProjectDirectory, "Internal", "Networking", "SteamTransportSession.cs"));
+
+        Assert.Contains("PacketCodec.Frame(PacketId.ServerStartGame", source, StringComparison.Ordinal);
+        Assert.Contains("Broadcast(payload, reliable: true)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DirectFramesAreSubscribedBeforeTheReaderStarts()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            ProjectDirectory, "Internal", "Networking", "DirectTransportSession.cs"));
+
+        var hostSubscription = source.IndexOf("connection.FrameReceived +=", StringComparison.Ordinal);
+        var hostReader = source.IndexOf("connection.StartReading()", StringComparison.Ordinal);
+        var clientSubscription = source.IndexOf("_host.FrameReceived +=", StringComparison.Ordinal);
+        var clientReader = source.IndexOf("_host.StartReading()", StringComparison.Ordinal);
+
+        Assert.True(hostSubscription >= 0 && hostReader > hostSubscription);
+        Assert.True(clientSubscription >= 0 && clientReader > clientSubscription);
+        Assert.Contains("internal void StartReading()", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("var reader = new Thread(ReadLoop)", source, StringComparison.Ordinal);
     }
 
     [Fact]

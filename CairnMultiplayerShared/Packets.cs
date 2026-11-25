@@ -240,6 +240,31 @@ public struct ClientHandshake : IPacket
     }
 }
 
+/// <summary>First packet a direct client sends after the TCP connection is accepted.</summary>
+public struct ClientDirectHandshake : IPacket
+{
+    public int ProtocolVersion;
+    public string PlayerName;
+    public string RoomCode;
+    public bool WorldUnavailable;
+
+    public void Serialize(BinaryWriter w)
+    {
+        w.Write(ProtocolVersion);
+        PacketCodec.WriteString(w, PlayerName ?? "");
+        PacketCodec.WriteString(w, RoomCode ?? "");
+        w.Write(WorldUnavailable);
+    }
+
+    public void Deserialize(BinaryReader r)
+    {
+        ProtocolVersion = r.ReadInt32();
+        PlayerName = PacketCodec.ReadString(r);
+        RoomCode = PacketCodec.ReadString(r);
+        WorldUnavailable = r.ReadBoolean();
+    }
+}
+
 public struct ClientPlayerState : IPacket
 {
     public float X, Y, Z;
@@ -383,6 +408,37 @@ public struct ServerHandshakeAck : IPacket
     {
         AssignedPlayerId = r.ReadInt32();
         ServerName = PacketCodec.ReadString(r);
+    }
+}
+
+/// <summary>Host's session rules and the player id assigned to a direct client.</summary>
+public struct ServerDirectSessionInfo : IPacket
+{
+    public int AssignedPlayerId;
+    public string ServerName;
+    public string RoomCode;
+    public int MaxPlayers;
+    public byte Mode;
+    public int World;
+
+    public void Serialize(BinaryWriter w)
+    {
+        w.Write(AssignedPlayerId);
+        PacketCodec.WriteString(w, ServerName ?? "");
+        PacketCodec.WriteString(w, RoomCode ?? "");
+        w.Write(MaxPlayers);
+        w.Write(Mode);
+        w.Write(World);
+    }
+
+    public void Deserialize(BinaryReader r)
+    {
+        AssignedPlayerId = r.ReadInt32();
+        ServerName = PacketCodec.ReadString(r);
+        RoomCode = PacketCodec.ReadString(r);
+        MaxPlayers = r.ReadInt32();
+        Mode = r.ReadByte();
+        World = r.ReadInt32();
     }
 }
 

@@ -50,6 +50,7 @@ public partial class Mod
         {
             ResetSceneBoundSyncState();
             RemotePlayerManager.ClearAll();
+            Network.ReplayPitons();
         }
 
         _mainMenu.OnSceneLoaded(sceneName);
@@ -57,25 +58,30 @@ public partial class Mod
         if (!isMainMenu)
             return;
 
-        var inLobby = Lobby.IsInLobby;
-        // Still connected but no lobby left to belong to: cut it here so the player can
-        // reconnect cleanly instead of dragging a half-dead session around the menu.
-        var strandedConnection = Network.IsConnected && !inLobby;
+        var inSession = Lobby.IsInLobby || (Network.IsConnected && Network.IsDirectTransport);
+        var strandedConnection = Network.IsConnected && !inSession;
         if (strandedConnection)
         {
+            _connectingStart = null;
             LoggerInstance.Msg("[State] Returned to MainMenu — auto-disconnecting");
             Network.Disconnect();
             _panel.SetStatus("Disconnected (returned to menu)", false);
         }
-        else if (!inLobby)
+        else if (!inSession)
         {
+            _connectingStart = null;
             // The ghosts and rope links belong to the session we just left. Nothing to
             // clear if we were neither connected nor in a lobby.
             return;
         }
 
-        RemotePlayerManager.ClearAll();
-        Rope.ClearLinks();
+        bool returningToRun = StartGame != null && StartGame.HasLastStartGame
+                              && Network.IsConnected && Network.CurrentSession != null;
+        if (!returningToRun)
+        {
+            RemotePlayerManager.ClearAll();
+            Rope.ClearLinks();
+        }
     }
 
     public override void OnSceneWasUnloaded(int buildIndex, string sceneName)
@@ -310,7 +316,7 @@ public partial class Mod
 
         // While the multiplayer panel is open, reassert the blocking of the menu's action maps
         // to prevent any background navigation (Delete, arrows, back).
-        if (_panel.IsVisible)
+        if (_panel.IsVisible && !StartGame.HasPending)
             InputInterop.BlockMainMenuActionMaps(allowOverlayNavigation: true);
     }
 
@@ -387,13 +393,14 @@ public partial class Mod
     private void TickConnectingStatus()
     {
         if (!_connectingStart.HasValue) return;
-        if (Lobby.IsInLobby) { _connectingStart = null; return; }
+        if (Lobby.IsInLobby || Network.IsConnected) { _connectingStart = null; return; }
 
         var elapsed = (DateTime.UtcNow - _connectingStart.Value).TotalSeconds;
+        var waitingFor = Network.IsDirectTransport ? "TCP peer" : "Steam";
         var msg = elapsed switch
         {
             < 3 => $"{_connectingVerb}...",
-            < 10 => $"{_connectingVerb} — waiting for Steam...",
+            < 10 => $"{_connectingVerb} — waiting for {waitingFor}...",
             _ => $"{_connectingVerb} — taking longer than usual..."
         };
         _panel.SetConnecting(msg);

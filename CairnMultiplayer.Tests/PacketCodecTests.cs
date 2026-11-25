@@ -85,6 +85,12 @@ public class ProtocolVersionTests
     }
 
     [Fact]
+    public void CurrentRunPacketId_IsStable()
+    {
+        Assert.Equal(92, (byte)PacketId.ServerCurrentRun);
+    }
+
+    [Fact]
     public void DefaultPort_InEphemeralRange()
     {
         Assert.InRange(Protocol.DefaultPort, 1024, 65535);

@@ -13,6 +13,9 @@ internal static class ModConfig
 
     public static MelonPreferences_Entry<string> RoomCode;
     public static MelonPreferences_Entry<int> MaxPlayers;
+    public static MelonPreferences_Entry<string> DirectAddress;
+    public static MelonPreferences_Entry<int> DirectPort;
+    public static MelonPreferences_Entry<bool> DirectHost;
 
     public static MelonPreferences_Entry<string> ConnectKey;
     public static MelonPreferences_Entry<string> DisconnectKey;
@@ -31,6 +34,9 @@ internal static class ModConfig
         var room = MelonPreferences.CreateCategory(CategoryRoom);
         RoomCode = room.CreateEntry("Code", "");
         MaxPlayers = room.CreateEntry("MaxPlayers", 8);
+        DirectAddress = room.CreateEntry("DirectAddress", "127.0.0.1");
+        DirectPort = room.CreateEntry("DirectPort", CairnMultiplayer.Shared.Protocol.DefaultPort);
+        DirectHost = room.CreateEntry("DirectHost", false);
 
         var keybinds = MelonPreferences.CreateCategory(CategoryKeybinds);
         ConnectKey = keybinds.CreateEntry("ConnectKey", "F5");
